@@ -1,0 +1,52 @@
+[ID:refinish_steel]
+[NUMERIC_VERSION:12]
+[DISPLAYED_VERSION:3.3.3]
+[EARLIEST_COMPATIBLE_NUMERIC_VERSION:4]
+[EARLIEST_COMPATIBLE_DISPLAYED_VERSION:3.0.0]
+[AUTHOR:grungeisdead]
+[NAME:Refinish Metal]
+[DESCRIPTION:Refinish metal bars using processed minerals, metals and precious stones.]
+[STEAM_TITLE:Refinish Metal]
+
+[STEAM_TAG:mod]
+[STEAM_TAG:metal]
+[STEAM_TAG:metals]
+[STEAM_TAG:material]
+[STEAM_TAG:inorganic]
+[STEAM_TAG:graphics]
+[STEAM_TAG:color]
+[STEAM_TAG:crafting]
+[STEAM_TAG:item]
+[STEAM_TAG:metallurgy]
+[STEAM_TAG:steel]
+[STEAM_TAG:customization]
+[STEAM_TAG:colors]
+[STEAM_TAG:smelting]
+[STEAM_TAG:rawless]
+[STEAM_TAG:utility]
+[STEAM_TAG:forge]
+[STEAM_TAG:jeweler]
+[STEAM_TAG:gem]
+[STEAM_TAG:stone]
+[STEAM_TAG:powder]
+[STEAM_TAG:dust]
+[STEAM_TAG:entity]
+[STEAM_TAG:ui]
+[STEAM_TAG:reaction]
+[STEAM_TAG:building]
+[STEAM_TAG:rawless]
+[STEAM_TAG:grind]
+[STEAM_TAG:utility]
+[STEAM_TAG:qol]
+[STEAM_TAG:compatibility]
+
+[STEAM_DESCRIPTION:
+===================================================
+CHANGELOG v3.3.3: Module Engine Efficiency
+===================================================
+
+- Fixed issies which caused excessive latency during module injection.
+
+]
+
+[STEAM_FILE_ID:3678145528]
