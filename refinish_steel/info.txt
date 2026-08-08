@@ -1,6 +1,6 @@
 [ID:refinish_steel]
-[NUMERIC_VERSION:12]
-[DISPLAYED_VERSION:3.3.3]
+[NUMERIC_VERSION:13]
+[DISPLAYED_VERSION:3.3.4]
 [EARLIEST_COMPATIBLE_NUMERIC_VERSION:4]
 [EARLIEST_COMPATIBLE_DISPLAYED_VERSION:3.0.0]
 [AUTHOR:grungeisdead]
@@ -42,10 +42,15 @@
 
 [STEAM_DESCRIPTION:
 ===================================================
-CHANGELOG v3.3.3: Module Engine Efficiency
+CHANGELOG v3.3.4: Module Engine Updates
 ===================================================
 
-- Fixed issies which caused excessive latency during module injection.
+MODULE ENGINE
+- (MAJOR) Fixed an issue which caused save corruption due to modules to failing to be wiped from RAM while on HOTSAVE mode.
+- (MAJOR) Fixed a bug which caused the module engine pipeline to fire on boot instead of during the RM startup protocol.
+- (MAJOR) Made changes to RM core engine and module engine to ensure module asset updates will not interfere with prior indexing of materials on pre-existing save files, which allows module updates to add or remove injected index items such as materials and reactions without shifting the entire indexing order and ruining previous saves. As long as doing so does not cause conflict with raw files, modules should be able to add or remove any injected assets they choose and remain compatible with previous saves.
+- Fixed a bug which allowed RM confuse its list of registered listeners when switching between forts.
+- Added a suite of organic classes to recognized reagent/product types.
 
 ]
 

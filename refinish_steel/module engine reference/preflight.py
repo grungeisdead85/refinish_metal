@@ -430,6 +430,39 @@ def check_reagent(g, j, tag, engine):
     # ---- warnings the validator does not raise ----
     flags = g.get('flags') or {}
 
+    # A flag name react.lua does not recognise is silently discarded.
+    # Nothing errors, the reagent just quietly matches more than it was
+    # meant to. Catching typos here is the only place it gets caught.
+    #
+    # Mirrors refinish-module-react.lua: the explicit mappings in
+    # build_reagent plus every entry in REAGENT_FLAG_MAP. Re-copy this
+    # set whenever that file gains flags.
+    for name in flags:
+        if name not in KNOWN_REAGENT_FLAGS:
+            err("%s.flags.%s is not a recognized flag name. The reaction "
+                "builder ignores unknown flags, so the filter you intended "
+                "will not be applied." % (t, name))
+
+    # unrotten is a positive requirement. Setting it false does not mean
+    # "must be rotten", it means no rot requirement at all, which is the
+    # default. DF has no filter for requiring rot.
+    if flags.get('unrotten') is False:
+        warn('dead_field',
+             "%s: unrotten false is a no-op, not an inverse. DF cannot "
+             "require an item be rotten. Omit the flag." % t)
+
+    # The two flags that can consume something irreplaceable.
+    if flags.get('allow_artifact'):
+        warn('artifact_risk',
+             "%s: allow_artifact lets this reagent take an artifact. If the "
+             "reaction consumes its input the artifact is gone. Pair with "
+             "non_artifact instead unless this is deliberate." % t)
+    if flags.get('crafted_artifact'):
+        warn('artifact_risk',
+             "%s: crafted_artifact REQUIRES an artifact rather than "
+             "permitting one. This reagent will seek out exactly the items "
+             "most players never want consumed." % t)
+
     # contains_in is accepted by the validator but the reaction builder
     # never reads it. It does nothing.
     if g.get('contains_in') is not None:
@@ -455,12 +488,34 @@ def check_reagent(g, j, tag, engine):
              "%s: ANY_CRAFT is item type -1. Without a reaction_class it "
              "matches every craft in the fortress." % t)
     if ty == 'BODY_PART':
-        if not flags.get('body_part') or not any(
-                flags.get(f) for f in ('bone', 'shell', 'horn')):
+        # body_part alone is sufficient. Verified live: a reagent
+        # carrying only body_part took raw hides and left coal bars and
+        # pitch buckets alone. The narrowing flags are optional.
+        if not flags.get('body_part'):
             warn('wildcard_reagent',
                  "%s: BODY_PART is item type -1 and the flags do all the "
-                 "filtering. It needs flags.body_part plus one of bone, shell, "
-                 "horn, or it matches every item in the fortress." % t)
+                 "filtering. Without flags.body_part it matches every item "
+                 "in the fortress, including bars, buckets and furniture." % t)
+    if ty == 'ANY_ITEM':
+        # ANY_ITEM has no item type at all, so an empty flags block is a
+        # reagent that matches literally everything.
+        narrowing = [f for f in flags
+                     if f not in ('preserve', 'non_artifact', 'unrotten', 'solid')
+                     and flags.get(f)]
+        if not narrowing:
+            warn('wildcard_reagent',
+                 "%s: ANY_ITEM is item type -1 with nothing pinning it. It "
+                 "needs at least one filtering flag or it matches every item "
+                 "in the fortress." % t)
+        if flags.get('furniture') and not flags.get('not_bin'):
+            warn('wildcard_reagent',
+                 "%s: the furniture category includes containers. Without "
+                 "not_bin this reagent will take barrels and bins off the "
+                 "stockpile floor." % t)
+        if not flags.get('non_artifact'):
+            warn('artifact_risk',
+                 "%s: an item type -1 reagent without non_artifact will "
+                 "eventually reach an artifact." % t)
     if ty == 'CONTAINER':
         warn('wildcard_reagent',
              "%s: CONTAINER is item type -1 and DF will accept a metal bar or a "
@@ -468,6 +523,50 @@ def check_reagent(g, j, tag, engine):
 
     if flags.get('in_container') and not g.get('contains'):
         pass  # the container side is checked at reaction level
+
+
+# ===============================================================
+# REAGENT FLAG VOCABULARY
+# ===============================================================
+# Every flag name refinish-module-react.lua acts on. Anything else in a
+# flags block is discarded by the reaction builder without complaint.
+#
+# Grouped the way react.lua handles them, not the way DF groups them by
+# bitfield, so the two files can be diffed against each other.
+KNOWN_REAGENT_FLAGS = frozenset((
+    # reagent-level, not job item filter bits
+    'preserve', 'in_container',
+
+    # mapped explicitly in build_reagent
+    'empty', 'glass_material', 'unrotten',
+    'non_economic', 'building_material', 'fire_safe', 'magma_safe',
+    'allow_melt_dump',
+    'body_part', 'bone', 'shell', 'horn', 'pearl', 'ivory_tooth',
+    'totemable', 'leather', 'silk', 'yarn', 'hair_wool', 'soap', 'plant',
+    'furniture', 'finished_goods', 'ammo', 'not_bin', 'solid',
+    'unimproved', 'any_raw_material',
+    'wood', 'stone', 'metal', 'hard', 'woven', 'grown_not_crafted',
+    'non_artifact',
+
+    # REAGENT_FLAG_MAP flags1
+    'improvable', 'butcherable', 'millable', 'allow_buryable',
+    'undisturbed', 'collected', 'sharpenable', 'murdered', 'processable',
+    'cookable', 'extract_bearing_plant', 'extract_bearing_fish',
+    'extract_bearing_vermin', 'processable_to_vial',
+    'processable_to_barrel', 'tameable_vermin', 'nearby', 'milk',
+    'milkable', 'lye_bearing',
+
+    # REAGENT_FLAG_MAP flags2
+    'dye', 'dyeable', 'dyed', 'sewn_imageless', 'glass_making', 'screw',
+    'deep_material', 'melt_designated', 'allow_artifact',
+    'plaster_containing', 'lye_milk_free', 'blunt', 'unengraved',
+
+    # REAGENT_FLAG_MAP flags3
+    'non_absorbent', 'non_pressed', 'allow_liquid_powder', 'any_craft',
+    'food_storage', 'sand', 'can_use_location_reserved', 'written_on',
+    'edged', 'on_ground', 'divine', 'crafted_artifact', 'gem',
+    'empty_or_water',
+))
 
 
 # ===============================================================

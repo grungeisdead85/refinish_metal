@@ -408,7 +408,17 @@ function RefinishPanelMetals:refresh_list()
     local choices = {}
     self.current_filtered_list = {}
     local valid_bases = _G.refinish_valid_bases
-    if not valid_bases then return end
+    if not valid_bases then
+        -- get_valid_bases (refinish-bases) returns nil until the
+        -- module pipeline has run, so before unpause there is no base
+        -- metal list to show. Returning silently leaves an empty box
+        -- that reads as a fault. has_reaction is false, so on_submit
+        -- at :165 ignores a click on this row.
+        self.list_widget:setChoices({
+            { text = "Unpause to finish loading", data = { id = "", has_reaction = false } }
+        })
+        return
+    end
     
     for _, base in ipairs(valid_bases) do
         local is_native = self.known_metals[base.id]

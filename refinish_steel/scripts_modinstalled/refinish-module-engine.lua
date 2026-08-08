@@ -103,9 +103,17 @@ end
 --       }
 --   end)
 -- ==========================================
-function register_listener(module_name, callback)
+-- mod_id is optional and should be the [ID:...] string from the
+-- module's info.txt. When supplied, broadcast_token_call checks it
+-- against get_active_mods and skips the module in worlds where it
+-- is not installed. Omitting it means the module is always broadcast
+-- to, which is correct for Lua-only modules with no mod folder.
+function register_listener(module_name, callback, mod_id)
     _G.refinish_module_listeners = _G.refinish_module_listeners or {}
-    _G.refinish_module_listeners[module_name] = callback
+    _G.refinish_module_listeners[module_name] = {
+        callback = callback,
+        mod_id   = mod_id,
+    }
     if _G.refinish_log_event then
         _G.refinish_log_event(string.format(
             "MODULE ENGINE: Listener registered: [%s].", module_name
@@ -149,11 +157,117 @@ end
 -- either JSON file paths or pre-built payload tables. We load,
 -- validate, and register each module.
 -- ==========================================
+-- Mod ids active in the CURRENT world, keyed for lookup. Nil when the
+-- API is unavailable, which means "cannot tell" and must not be read
+-- as "nothing is active".
+local function active_mod_ids()
+    local ok, sm = pcall(require, 'script-manager')
+    if not ok or not sm or not sm.get_active_mods then return nil end
+    local ok2, mods = pcall(sm.get_active_mods)
+    if not ok2 or type(mods) ~= 'table' then return nil end
+    local ids = {}
+    for _, m in ipairs(mods) do
+        if m.id then ids[m.id] = true end
+    end
+    return ids
+end
+
 local function broadcast_token_call()
     _G.refinish_module_registry = {}
-    local listeners = _G.refinish_module_listeners or {}
     local accepted = 0
     local rejected = 0
+
+    -- Listeners are _G globals and the DFHack Lua state outlives the
+    -- world, so a module registered under one save is still sitting
+    -- here when a different save loads. Modules guard themselves with
+    -- getModSourcePath, but that resolves against installed_mods
+    -- globally rather than the loaded world, so it answers for a mod
+    -- this save never had.
+    --
+    -- Reproduced live: load a save with ArgMOD, switch to a save
+    -- without it, and ArgMOD injects anyway. Because it injects first,
+    -- every module after it shifts index and already-built workshops
+    -- render as the wrong material.
+    --
+    -- get_active_mods is world-scoped, so it is the correct gate.
+    -- Listeners are matched by mod_id when the module supplies one.
+    -- A module that supplies none is always broadcast to, which keeps
+    -- Lua-only modules and the older registration signature working.
+    -- Absence from get_active_mods has two causes and only one of them
+    -- means "skip". getModSourcePath resolves against every installed
+    -- mod, not just the loaded world (Lua_API: returns nil only if the
+    -- mod cannot be found at all, and returns the newest version's path
+    -- when the world simply has not loaded it). So a nil path means the
+    -- mod_id matches nothing on disk, which is a bad id rather than an
+    -- inactive world.
+    --
+    -- That distinction matters because dropping a module shrinks the
+    -- injected material band and shifts every index after it. Skipping
+    -- on a typo would cause the exact corruption this gate exists to
+    -- prevent. An unresolvable id therefore fails open and says so,
+    -- which matches how a listener with no mod_id at all is treated.
+    local function mod_id_resolves(mod_id)
+        local ok, sm = pcall(require, 'script-manager')
+        if not ok or not sm or not sm.getModSourcePath then return true end
+        local ok2, path = pcall(sm.getModSourcePath, mod_id)
+        if not ok2 then return true end
+        return path ~= nil
+    end
+
+    local active = active_mod_ids()
+
+    -- DIAGNOSTIC: record exactly what the world reported before any
+    -- gating decision is made, so a dropped module can be attributed
+    -- rather than guessed at. If a module's id is absent from this
+    -- list while its mod is installed in the world, the fault is in
+    -- get_active_mods at this call site, not in the comparison below.
+    -- This only logs. No behaviour changes.
+    if _G.refinish_log_event then
+        if not active then
+            _G.refinish_log_event(
+                "MODULE ENGINE: get_active_mods unavailable. No listener gated this broadcast.")
+        else
+            local ids = {}
+            for id, _ in pairs(active) do table.insert(ids, id) end
+            table.sort(ids)
+            _G.refinish_log_event(string.format(
+                "MODULE ENGINE: World reports %d active mod(s): %s",
+                #ids, table.concat(ids, ", ")))
+        end
+    end
+
+    local listeners = {}
+    local skipped = 0
+    for name, entry in pairs(_G.refinish_module_listeners or {}) do
+        local callback, mod_id = entry, nil
+        if type(entry) == 'table' then
+            callback, mod_id = entry.callback, entry.mod_id
+        end
+        if active and mod_id and not active[mod_id] then
+            if mod_id_resolves(mod_id) then
+                -- Installed somewhere, just not in this world. Correct skip.
+                skipped = skipped + 1
+                if _G.refinish_log_event then
+                    _G.refinish_log_event(string.format(
+                        "MODULE ENGINE: [%s] is not active in this world. Skipped.", name))
+                end
+            else
+                -- Matches no installed mod. Treat as unknown, not absent.
+                listeners[name] = callback
+                if _G.refinish_log_event then
+                    _G.refinish_log_event(string.format(
+                        "MODULE ENGINE WARNING: [%s] declares mod_id [%s], which matches no installed mod. Broadcasting anyway. Correct the id to match info.txt.",
+                        name, tostring(mod_id)))
+                end
+            end
+        else
+            listeners[name] = callback
+        end
+    end
+    if skipped > 0 and _G.refinish_log_event then
+        _G.refinish_log_event(string.format(
+            "MODULE ENGINE: %d listener(s) skipped as inactive in this world.", skipped))
+    end
 
     if _G.refinish_log_event then
         _G.refinish_log_event(string.format(

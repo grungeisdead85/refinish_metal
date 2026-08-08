@@ -25,11 +25,51 @@ local msg_setting = dfhack.persistent.getSiteData('refinish_config_msg')
 if not msg_setting or msg_setting == "" then msg_setting = 'GUIDED' end
 
 -- ==========================================
+-- OWNERSHIP TEST
+-- ==========================================
+-- Every id prefix RM or one of its modules owns. Core RM is always
+-- included; module prefixes come from the live registry, which
+-- clear_module_assets does not nil, so they remain readable after a
+-- clear. A nil registry means the token call has not run yet, so
+-- nothing of ours is in the arrays to find.
+--
+-- Declared here rather than beside the clear gate because the
+-- baseline check below needs it too.
+-- ==========================================
+local function rm_owned(str)
+    if string.sub(str, 1, 15) == "REFINISH_STEEL_" then return true end
+    for prefix, _ in pairs(_G.refinish_module_registry or {}) do
+        if string.sub(str, 1, #prefix) == prefix then return true end
+    end
+    return false
+end
+
+-- ==========================================
 -- BASELINE CHECK
 -- If RAM isn't loaded there's nothing for us to do.
 -- Just fire a vanilla quicksave and exit.
 -- ==========================================
-if not _G.refinish_ram_loaded then
+-- _G.refinish_ram_loaded alone is not sufficient. It describes core
+-- RM only, and module materials are injected by a separate pipeline
+-- with its own flag. Any state where one is live and the other is
+-- not would pass this check and write injected data to disk.
+--
+-- The array is the ground truth, so it is asked directly. This runs
+-- once per save trigger, not per frame, so a walk of the inorganics
+-- and reactions arrays is affordable.
+local function ram_is_at_baseline()
+    if _G.refinish_ram_loaded then return false end
+    if _G.refinish_modules_injected then return false end
+    for _, mat in ipairs(df.global.world.raws.inorganics.all) do
+        if rm_owned(mat.id) then return false end
+    end
+    for _, rxn in ipairs(df.global.world.raws.reactions.reactions) do
+        if rm_owned(rxn.code) then return false end
+    end
+    return true
+end
+
+if ram_is_at_baseline() then
     print("Refinish Metal: Memory is already at baseline. Triggering standard quicksave.")
     if _G.refinish_log_event then _G.refinish_log_event("AUTOSAVE: Memory at baseline. Standard quicksave.") end
     dfhack.run_command('quicksave')
@@ -77,15 +117,23 @@ end
 -- before handing off to the engine save.
 -- ==========================================
 local function is_memory_physically_clear()
+    -- Every id prefix that must be gone before the engine save.
+    -- Core RM plus every module prefix from the live registry.
+    -- Testing only REFINISH_STEEL_ meant this returned true with
+    -- module materials still in the array, so a failed module clear
+    -- was invisible and the quicksave went ahead regardless.
+    -- clear_module_assets does not nil the registry, so the prefixes
+    -- are still readable here after it runs.
+
     for _, mat in ipairs(df.global.world.raws.inorganics.all) do
-        if string.find(mat.id, "REFINISH_STEEL_") then return false end
+        if rm_owned(mat.id) then return false end
     end
     local reactions = df.global.world.raws.reactions.reactions
     for _, rxn in ipairs(reactions) do
-        if string.find(rxn.code, "REFINISH_STEEL_") then return false end
+        if rm_owned(rxn.code) then return false end
     end
     for _, cat in ipairs(df.global.world.raws.reactions.reaction_categories) do
-        if string.find(cat.id, "REFINISH_STEEL_") then return false end
+        if rm_owned(cat.id) then return false end
     end
     local player_civ = df.historical_entity.find(df.global.plotinfo.civ_id)
     if player_civ and player_civ.entity_raw then
@@ -126,6 +174,27 @@ if save_protocol == 'HOTSAVE' then
     local t_clr_rxn = os.clock() - t; lset('t_clr_rxn', t_clr_rxn); t = os.clock()
 
     dfhack.run_script('refinish-clear')
+
+    -- The three clear scripts above filter on the literal
+    -- REFINISH_STEEL_ prefix, so they remove core RM and nothing
+    -- else. Module assets are swept only by clear_module_assets,
+    -- which HOTSAVE never reached because it bypasses
+    -- refinish-shutdown. Module materials stayed live in the
+    -- inorganics array across the quicksave.
+    --
+    -- Runs last, matching refinish-shutdown.lua:56-82. Core RM
+    -- injects after modules, so removing core RM first and modules
+    -- second is strict LIFO across the whole injected region.
+    -- clear_module_assets sweeps entity permissions before deleting
+    -- reactions (engine:819), so no permitted_reaction_id is left
+    -- dangling for is_memory_physically_clear to trip on.
+    pcall(function()
+        local mod_engine = dfhack.script_environment('refinish-module-engine')
+        if mod_engine and mod_engine.clear_module_assets then
+            mod_engine.clear_module_assets()
+        end
+    end)
+
     local t_clr_mat = os.clock() - t; lset('t_clr_mat', t_clr_mat)
 
     if _G.refinish_log_event then
@@ -185,6 +254,26 @@ if save_protocol == 'HOTSAVE' then
                         end
                         local r_sweep = os.clock() - t2; t2 = os.clock()
 
+                        -- Modules are cleared before the quicksave now, so
+                        -- they have to be rebuilt here. Order mirrors
+                        -- refinish-startup exactly: modules inject first and
+                        -- occupy the lower band, core RM appends after them.
+                        -- Re-injecting in any other order would swap the bands
+                        -- and move every index in the save.
+                        --
+                        -- refinish-scan depends on this having run: the
+                        -- blueprint is built from the live inorganics array,
+                        -- so module materials must be present before it scans.
+                        --
+                        -- run_module_pipeline returns immediately unless
+                        -- _G.refinish_modules_injected is false, which
+                        -- clear_module_assets set on the way out (engine:877
+                        -- and engine:623).
+                        pcall(function()
+                            dfhack.script_environment('refinish-module-engine').run_module_pipeline()
+                        end)
+                        local r_mod = os.clock() - t2; t2 = os.clock()
+
                         dfhack.run_script('refinish-scan')
                         local r_scan = os.clock() - t2; t2 = os.clock()
 
@@ -193,6 +282,19 @@ if save_protocol == 'HOTSAVE' then
 
                         dfhack.run_script('refinish-index-reaction')
                         local r_rxn = os.clock() - t2; t2 = os.clock()
+
+                        -- Module permissions were erased with the module
+                        -- reactions, so they are re-evaluated here. Sits
+                        -- between index-reaction and index-entity because that
+                        -- is where refinish-startup:141-147 puts it: the
+                        -- evaluator registers module metals as known, and
+                        -- index-entity gates core RM permissions on that.
+                        pcall(function()
+                            if _G.refinish_module_registry and next(_G.refinish_module_registry) then
+                                dfhack.script_environment('refinish-module-evaluate-permissions').evaluate_and_inject()
+                            end
+                        end)
+                        local r_modperm = os.clock() - t2; t2 = os.clock()
 
                         dfhack.run_script('refinish-index-entity')
                         local r_ent = os.clock() - t2
@@ -229,15 +331,17 @@ if save_protocol == 'HOTSAVE' then
                                 "Quicksave:        %.3fs\n\n" ..
                                 "--- RAM RESTORE (%.3fs) ---\n" ..
                                 "Ghost Sweep:      %.3fs\n" ..
+                                "Module Pipeline:  %.3fs\n" ..
                                 "Blueprint Scan:   %.3fs\n" ..
                                 "Index Materials:  %.3fs\n" ..
                                 "Index Reactions:  %.3fs\n" ..
+                                "Module Perms:     %.3fs\n" ..
                                 "Index Entities:   %.3fs\n" ..
                                 "Orphans Fixed: %d",
                                 active_time,
                                 clear_total, t_clr_ent, t_clr_rxn, t_clr_mat,
                                 t_engine,
-                                t_restore, r_sweep, r_scan, r_mat, r_rxn, r_ent,
+                                t_restore, r_sweep, r_mod, r_scan, r_mat, r_rxn, r_modperm, r_ent,
                                 orphaned_jobs_fixed
                             )
                             local RefinishPrompt = reqscript('refinish-prompt').RefinishPrompt

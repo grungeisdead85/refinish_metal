@@ -147,7 +147,7 @@ dfhack.onStateChange['refinish_steel_system'] = function(sc)
         _G.refinish_log_event("SC_MAP_LOADED: Active map loaded from directory -> " .. current_save)
 
         _G.refinish_active = true
-        _G.refinish_version = "v3.3.2"
+        _G.refinish_version = "v3.3.4"
         _G.refinish_menu_locked = false
         _G.refinish_original_autosave = _G.refinish_original_autosave or df.global.d_init.feature.autosave
 
@@ -236,40 +236,33 @@ dfhack.onStateChange['refinish_steel_system'] = function(sc)
         local boot_clock = os.clock()
         local t = boot_clock
 
-        -- Step 1: Module pipeline
-        dfhack.script_environment('refinish-module-engine').run_module_pipeline()
-        _G.refinish_telemetry.boot.t_modules = os.clock() - t
-        _G.refinish_log_event(string.format("BOOT: Module pipeline complete (%.3fs).", _G.refinish_telemetry.boot.t_modules))
+        -- Steps 1, 2 and 3 (module pipeline, reaction evaluators,
+        -- unified boot scan) now run in refinish-startup, as Step 2
+        -- and Step 2.5.
+        --
+        -- WHY THEY LEFT: the module pipeline WRITES to the inorganics
+        -- array. Running it here put the module band into RAM at
+        -- SC_MAP_LOADED, before the pause protocol and before
+        -- refinish-index sets _G.refinish_ram_loaded. Every check in
+        -- RM that answers "is it safe to write to disk" reads that
+        -- flag or tests only the REFINISH_STEEL_ prefix, so all of
+        -- them reported clean while module materials were live. The
+        -- autosave baseline check then wrote saves with injected data
+        -- still in the array.
+        --
+        -- The evaluators and the boot scan followed it because both
+        -- read the array it writes, so all three moved together. In
+        -- startup they are guarded to build once per loaded world,
+        -- while the module pipeline keeps its own per-cycle guard.
+        --
+        -- Counts formerly snapshotted here (valid_metals,
+        -- known_metals, reaction_traits, civ_techs) moved with them,
+        -- since they describe caches that no longer exist at boot.
+        --
+        -- boot_clock and t above are deliberately kept: t_state and
+        -- t_total below still measure against them. t is reset here so
+        -- t_state covers only the state check, as before.
         t = os.clock()
-
-        -- Step 2: Reaction evaluators
-        -- Run BEFORE boot so that boot's civ tech evaluation (Pass 3)
-        -- can consume the evaluated reactions cache for Source B2
-        -- (implicitly permitted reactions via custom buildings).
-        -- The evaluators only read raw df.global data and don't
-        -- depend on anything boot produces.
-        _G.refinish_evaluated_reactions = eval_metal.get_metal_making_reactions(true)
-        _G.refinish_best_metal_template = eval_metal.get_best_metal_template(true)
-        _G.refinish_best_dust_template = eval_dust.get_best_dust_template(true)
-        _G.refinish_telemetry.boot.t_eval = os.clock() - t
-
-        local metal_code = _G.refinish_best_metal_template and _G.refinish_best_metal_template.code or "NONE"
-        local dust_code = _G.refinish_best_dust_template and _G.refinish_best_dust_template.code or "NONE"
-        _G.refinish_log_event(string.format("BOOT: Evaluators complete (%.3fs); Metal: [%s], Dust: [%s].", _G.refinish_telemetry.boot.t_eval, metal_code, dust_code))
-        t = os.clock()
-
-        -- Step 3: Unified boot scan (builds valid_bases, known_metals, reaction_traits, civ_tech)
-        reqscript('refinish-boot').run_unified_scan()
-        _G.refinish_telemetry.boot.t_boot_scan = os.clock() - t
-        _G.refinish_log_event(string.format("BOOT: Unified scan complete (%.3fs).", _G.refinish_telemetry.boot.t_boot_scan))
-        t = os.clock()
-
-        -- Snapshot boot asset counts into telemetry
-        local function tcount(tbl) if not tbl then return 0 end; local n = 0; for _ in pairs(tbl) do n = n + 1 end; return n end
-        _G.refinish_telemetry.counts.valid_metals = _G.refinish_valid_bases and #_G.refinish_valid_bases or 0
-        _G.refinish_telemetry.counts.known_metals = tcount(_G.refinish_known_metals_cache)
-        _G.refinish_telemetry.counts.reaction_traits = tcount(_G.refinish_reaction_traits)
-        _G.refinish_telemetry.counts.civ_techs = tcount(_G.refinish_civ_tech)
 
         -- Snapshot baseline game state BEFORE any RM injection happens.
         -- These numbers are the vanilla totals (plus any other mods).
@@ -290,12 +283,18 @@ dfhack.onStateChange['refinish_steel_system'] = function(sc)
             local THEME = reqscript('refinish-theme').get_current_theme()
             RefinishPrompt{
                 frame_h = 14,
-                text = "Refinish Metal is online. Please review your configuration settings.",
+                text = "Refinish Metal is online. Review your configuration settings after unpausing.",
                 text_pen = THEME.PRI,
-                on_ok = function() 
-                    dfhack.run_script('refinish-hud', 'show', 'config')
-                end
-            }:show()
+                }:show()
+
+            -- The config panel no longer opens from this prompt.
+            -- It reaches refinish-panel-metals, which calls
+            -- get_valid_bases and would run the unified scan before
+            -- the module pipeline has injected anything, caching a
+            -- base metal list with no module content for the rest of
+            -- the session. Deferred to execute_startup instead, which
+            -- runs after the full pipeline.
+            _G.refinish_first_run_pending = true
         else
             local msg_setting = dfhack.persistent.getSiteData('refinish_config_msg')
             if not msg_setting or msg_setting == "" then msg_setting = 'GUIDED' end
@@ -409,6 +408,17 @@ dfhack.onStateChange['refinish_steel_system'] = function(sc)
             if _G.refinish_active then
                 _G.refinish_log_event("SYSTEM: Executing refinish-startup script. Delay used: " .. tostring(delay_setting)) -- ADDED LOG
                 dfhack.run_script('refinish-startup', 'SILENT')
+
+                -- First run only. dfhack.run_script above is
+                -- synchronous, so the pipeline has completed and every
+                -- cache the config panel reads is warm. Flag is set by
+                -- the first time install check and cleared here so it
+                -- fires once per install, not once per unpause.
+                if _G.refinish_first_run_pending then
+                    _G.refinish_first_run_pending = nil
+                    _G.refinish_log_event("SYSTEM: First run; opening configuration panel.")
+                    dfhack.run_script('refinish-hud', 'show', 'config')
+                end
             end
         end
 

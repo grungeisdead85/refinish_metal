@@ -84,7 +84,7 @@ local function register_with_rm()
         end
 
         return result
-    end)
+    end, MODULE_ID)
 end
 
 register_with_rm()

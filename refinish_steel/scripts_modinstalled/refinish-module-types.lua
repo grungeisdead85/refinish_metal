@@ -42,6 +42,90 @@
 -- ==========================================
 REAGENT_TYPES = {
 
+    -- ----- ORGANIC INTAKE -----
+    -- All of these wildcard the material deliberately. Organic mat_type
+    -- is computed per species (plant = 419 + that plant's own local
+    -- material index, creature = 19 + its own), and those local indices
+    -- are NOT stable across species. Olive proves it: its local material
+    -- 1 is frozen olive oil where nearly every other tree has wood, so a
+    -- fixed mat_type of 420 would quietly accept oil in a wood reaction.
+    --
+    -- Filtering therefore happens entirely through flags in the JSON.
+    -- Vanilla does the same: the gukil strings reagent is THREAD at
+    -- mat -1/-1 carrying nothing but ANY_PLANT_MATERIAL.
+    --
+    -- Named rather than numbered: an off by one in the item enum
+    -- silently swaps the item kind.
+
+    -- Everything. Flags MUST filter or this matches every item in the
+    -- fortress. For cross-cutting filters no single item type can
+    -- express, such as furniture combined with a wood material.
+    ANY_ITEM     = { item_type = -1,                       mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- A harvested plant, what a farm plot yields.
+    PLANT        = { item_type = df.item_type.PLANT,        mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- Leaves, fruit, nuts. What a plant grows rather than is.
+    PLANT_GROWTH = { item_type = df.item_type.PLANT_GROWTH, mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    SEEDS        = { item_type = df.item_type.SEEDS,        mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- A whole body, as distinct from CORPSEPIECE which is a part.
+    CORPSE       = { item_type = df.item_type.CORPSE,       mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- Bones, skulls, raw hides, teeth, shells. BODY_PART below reaches
+    -- the same items via flags at item_type -1; this pins the type.
+    CORPSEPIECE  = { item_type = df.item_type.CORPSEPIECE,  mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- Tanned leather. A raw hide is CORPSEPIECE, not this.
+    SKIN_TANNED  = { item_type = df.item_type.SKIN_TANNED,  mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- Spun thread. Plant, silk and yarn all arrive as this item type,
+    -- separated by flags2.plant / silk / yarn.
+    THREAD       = { item_type = df.item_type.THREAD,       mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    CLOTH        = { item_type = df.item_type.CLOTH,        mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- Fat and tallow. Dimensioned, so quantity counts units not items.
+    GLOB         = { item_type = df.item_type.GLOB,         mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- Organs and cuts. Confirmed live: a heart is MEAT, not
+    -- CORPSEPIECE, and neither body_part nor a CORPSEPIECE reagent can
+    -- reach one. Arms, heads and bones are CORPSEPIECE. The split
+    -- follows the stockpile: organs are food, limbs are corpses.
+    MEAT         = { item_type = df.item_type.MEAT,         mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- Prepared fish, as distinct from FISH_RAW.
+    FISH         = { item_type = df.item_type.FISH,         mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+    FISH_RAW     = { item_type = df.item_type.FISH_RAW,     mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    EGG          = { item_type = df.item_type.EGG,          mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+    CHEESE       = { item_type = df.item_type.CHEESE,       mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- Vermin remains. Its own stockpile category, so its own type.
+    REMAINS      = { item_type = df.item_type.REMAINS,      mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- What tree felling leaves behind. Item type 91, distinct from
+    -- WOOD at 5, and nothing in vanilla consumes it.
+    BRANCH       = { item_type = df.item_type.BRANCH,       mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- A skull mounted as a totem. Item type 59, no longer a corpse
+    -- piece, so no body_part reagent will reach one.
+    TOTEM        = { item_type = df.item_type.TOTEM,        mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- Prepared meals and raw food. FOOD is 72, DRINK is 69.
+    FOOD         = { item_type = df.item_type.FOOD,         mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+    DRINK        = { item_type = df.item_type.DRINK,        mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- Extracts, oils, syrups. Dimensioned and container-bound, so a
+    -- reagent needs in_container plus a matching container reagent.
+    LIQUID_MISC  = { item_type = df.item_type.LIQUID_MISC,  mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
+    -- Paper. SHEET is 90, BOOK is 89. Both carry flags3.written_on,
+    -- which is how a reaction avoids consuming a written work.
+    SHEET        = { item_type = df.item_type.SHEET,        mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+    BOOK         = { item_type = df.item_type.BOOK,         mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+
     -- ----- BARS -----
     -- A bar of a specific inorganic metal (iron, copper, etc.)
     METAL_BAR = {
@@ -417,6 +501,130 @@ REAGENT_TYPES = {
         needs_metal_id = false,
     },
 
+    -- ----- ORGANIC INTAKE -----
+    -- Item types a reaction can consume organic matter through.
+    --
+    -- Every one of them wildcards the material, and that is deliberate
+    -- rather than lazy. Organic mat_type is computed per species: a
+    -- plant material is 419 plus that plant's own local material index,
+    -- a creature material is 19 plus its own. Those local indices are
+    -- NOT stable across species. Olive proves it, since its local
+    -- material 1 is frozen olive oil while almost every other tree has
+    -- wood there, so a fixed mat_type of 420 would quietly accept oil
+    -- in a wood reaction.
+    --
+    -- So filtering happens entirely through flags in the JSON. That is
+    -- what vanilla does too: the gukil strings reagent is THREAD at
+    -- mat -1/-1 carrying nothing but ANY_PLANT_MATERIAL, and the soap
+    -- reagent is GLOB at mat -1/-1 carrying a reaction class.
+    --
+    -- Named rather than numbered for the reason JUG gives: an off by
+    -- one in the item enum silently swaps the item kind.
+
+    -- Everything. Flags MUST do the filtering or this matches every
+    -- item in the fortress, including furniture, bars and artifacts.
+    -- Use it for cross-cutting filters that no single item type can
+    -- express, such as furniture combined with a wood material.
+    ANY_ITEM = {
+        item_type      = -1,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- A harvested plant, the thing a farm plot yields.
+    PLANT = {
+        item_type      = df.item_type.PLANT,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- Leaves, fruit, nuts. Anything a plant grows rather than is.
+    PLANT_GROWTH = {
+        item_type      = df.item_type.PLANT_GROWTH,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    SEEDS = {
+        item_type      = df.item_type.SEEDS,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- A whole body. Distinct from CORPSEPIECE, which is a part.
+    CORPSE = {
+        item_type      = df.item_type.CORPSE,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- Bones, skulls, hides, teeth, shells. BODY_PART above reaches the
+    -- same items through flags at item_type -1; this one pins the type
+    -- instead, which is safer where no other filter is wanted.
+    CORPSEPIECE = {
+        item_type      = df.item_type.CORPSEPIECE,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- Tanned leather, not the raw hide. Raw hides are CORPSEPIECE.
+    SKIN_TANNED = {
+        item_type      = df.item_type.SKIN_TANNED,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- Spun thread. Plant, silk and yarn all arrive as this item type,
+    -- separated by flags2.plant, flags2.silk and flags2.yarn.
+    THREAD = {
+        item_type      = df.item_type.THREAD,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    CLOTH = {
+        item_type      = df.item_type.CLOTH,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- Fat and tallow. Dimensioned, so quantity counts units, not items.
+    GLOB = {
+        item_type      = df.item_type.GLOB,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
     -- ----- RAW / ROUGH -----
     -- A rough gemstone or uncut glass piece
     ROUGH = {
@@ -462,7 +670,9 @@ REAGENT_TYPES = {
 -- ==========================================
 PRODUCT_TYPES = {
     BAR         = { item_type = 0,  mat_type = 0  },  -- INORGANIC bar
-    BAR_COAL    = { item_type = 0,  mat_type = 7  },  -- Coal/coke bar
+    -- BAR_COAL carries mat_subtypes. See the builtin bars note below.
+    BAR_COAL    = { item_type = 0,  mat_type = df.builtin_mats.COAL,
+                    mat_subtypes = { COKE = 0, CHARCOAL = 1, COAL = -1, TEST_A = 2, TEST_B = 3} },
     BLOCKS      = { item_type = 2,  mat_type = 0  },  -- Stone/ceramic blocks
     ROUGH       = { item_type = 3,  mat_type = 0  },  -- Raw gem / uncut glass
     BOULDER     = { item_type = 4,  mat_type = 0  },  -- Boulder
@@ -476,11 +686,28 @@ PRODUCT_TYPES = {
     -- is no inorganic to look up, so mat_index stays -1 and the product
     -- names no material of its own.
     --
-    -- BAR_COAL and BAR_POTASH above are the same shape and currently
-    -- work only by accident: their mat_id ("COKE", "POTASH") is not an
-    -- inorganic, the lookup misses, and the miss returns the -1 they
-    -- needed anyway. The builtin marker makes that deliberate, and both
-    -- forms keep working.
+    -- BAR_POTASH above is this shape too, and it works because POTASH
+    -- has no subtypes: its mat_id misses the inorganic lookup, the miss
+    -- returns -1, and -1 is correct for a material with one form.
+    --
+    -- BAR_COAL is NOT that shape, and reading it as though it were was
+    -- the bug. The builtin COAL material is a single object whose
+    -- state_name.Solid is just "coal". Coke and charcoal are not
+    -- separate materials in the raws. mat_index is a pure discriminator
+    -- that DF's item naming and stockpile code reads:
+    --
+    --     0   coke      (vanilla LIGNITE_TO_COKE writes this)
+    --     1   charcoal  (the wood furnace's built-in job writes this)
+    --    -1   neither, so DF falls back to a generic label
+    --
+    -- Confirmed two ways. The vanilla reaction's product carries
+    -- mat_type 7 with mat_index 0, and dfhack.matinfo.find resolves
+    -- 'COAL:COKE' to 7/0 and 'COAL:CHARCOAL' to 7/1.
+    --
+    -- So BAR_COAL carries mat_subtypes, mapping the schema's mat_id
+    -- string onto that index. Before it existed, mat_id fell through to
+    -- the inorganic lookup, missed, and every coal bar RM built was
+    -- written as -1.
     --
     -- ASH and PEARLASH resolve by name for the reason JUG gives: off by
     -- one in the builtin table silently swaps the material.

@@ -100,6 +100,94 @@ local function run_pipeline()
     t = os.clock()
 
     -- ==========================================
+    -- STEP 2.5: BOOT CACHE BUILDER
+    -- ==========================================
+    -- Evaluators plus the unified boot scan. Builds the _G caches
+    -- that later steps consume:
+    --
+    --   evaluators -> refinish_evaluated_reactions
+    --                 refinish_best_metal_template   (Steps 5 and 6)
+    --                 refinish_best_dust_template    (Steps 5 and 6)
+    --   boot scan  -> refinish_valid_bases, refinish_known_metals_cache
+    --                 refinish_reaction_traits
+    --                 refinish_civ_tech              (Step 3 and Step 5.5)
+    --
+    -- ORDER IS LOAD BEARING IN THREE PLACES:
+    --
+    --   1. AFTER Step 2. The evaluators read
+    --      _G.refinish_module_registry to exclude module reactions
+    --      from scoring (evaluate-metal-making:195-211,
+    --      evaluate-dust-making:164-177). With an empty registry a
+    --      module reaction could win, and the cached .reaction is a
+    --      live df.reaction pointer that clear_module_assets frees on
+    --      the next wash. This ordering is memory safety, not taste.
+    --
+    --   2. Evaluators BEFORE the scan. Pass 3 Source B2 consumes
+    --      refinish_evaluated_reactions (refinish_steel:245-248).
+    --
+    --   3. BEFORE Step 3. refinish-scan reads refinish_civ_tech at
+    --      :395 with a silent "or {}" fallback, and calls
+    --      get_valid_bases(true, true) at :107, which would trigger
+    --      the scan itself with different allow_divine/allow_mythical
+    --      arguments than boot uses. Populating first keeps that
+    --      fallback dead.
+    --
+    -- GUARD LIFETIME: once per loaded world, NOT once per data cycle.
+    -- These caches are nil'd only in the teardown block
+    -- (refinish_steel:866-873) and never by a wash, so every later
+    -- startup invocation skips this. That matters because
+    -- refinish-startup runs on every ESC menu exit, every autosave
+    -- restore and every config change.
+    --
+    -- Contrast Step 2 above: guarded by _G.refinish_modules_injected,
+    -- which clear_module_assets resets, so modules DO rebuild every
+    -- data cycle. Two adjacent blocks, two different lifetimes.
+    -- ==========================================
+    if not _G.refinish_civ_tech
+       or not _G.refinish_best_metal_template
+       or not _G.refinish_best_dust_template then
+
+        local eval_metal = reqscript('refinish-evaluate-metal-making')
+        local eval_dust  = reqscript('refinish-evaluate-dust-making')
+
+        _G.refinish_evaluated_reactions = eval_metal.get_metal_making_reactions(true)
+        _G.refinish_best_metal_template = eval_metal.get_best_metal_template(true)
+        _G.refinish_best_dust_template  = eval_dust.get_best_dust_template(true)
+
+        local metal_code = _G.refinish_best_metal_template and _G.refinish_best_metal_template.code or "NONE"
+        local dust_code  = _G.refinish_best_dust_template and _G.refinish_best_dust_template.code or "NONE"
+        if _G.refinish_log_event then
+            _G.refinish_log_event(string.format(
+                "STARTUP: Evaluators complete; Metal: [%s], Dust: [%s].", metal_code, dust_code))
+        end
+
+        reqscript('refinish-boot').run_unified_scan()
+
+        -- Cache counts move with the work that produces them. These
+        -- were snapshotted at boot (refinish_steel:269-272); once the
+        -- boot call site is removed they would read zero there.
+        if _G.refinish_telemetry and _G.refinish_telemetry.counts then
+            local function tcount(tbl)
+                if not tbl then return 0 end
+                local n = 0; for _ in pairs(tbl) do n = n + 1 end; return n
+            end
+            local c = _G.refinish_telemetry.counts
+            c.valid_metals    = _G.refinish_valid_bases and #_G.refinish_valid_bases or 0
+            c.known_metals    = tcount(_G.refinish_known_metals_cache)
+            c.reaction_traits = tcount(_G.refinish_reaction_traits)
+            c.civ_techs       = tcount(_G.refinish_civ_tech)
+        end
+
+        local t_boot_cache = os.clock() - t
+        tset('t_boot_cache', t_boot_cache)
+        if _G.refinish_log_event then
+            _G.refinish_log_event(string.format(
+                "STARTUP: Boot cache built (%.3fs).", t_boot_cache))
+        end
+        t = os.clock()
+    end
+
+    -- ==========================================
     -- STEP 3: BLUEPRINT SCAN
     -- ==========================================
     dfhack.run_script('refinish-scan')
@@ -204,6 +292,31 @@ local function run_pipeline()
         end
     end
 
+    -- ==========================================
+    -- STEP 6.5: MATERIAL INDEX REMAP
+    -- ==========================================
+    -- Indices are final as of Step 4. Before anything reads a
+    -- stored index, translate every object through last session's
+    -- ledger: stored index -> material name -> current index.
+    --
+    -- Runs in BOTH protocols, outside the AUTOSAVE gate below.
+    -- HOTSAVE writes no payload at all, so this is the only
+    -- recovery it has.
+    --
+    -- Must run BEFORE refinish-load. The payload restore sets
+    -- mat_index from names; remapping afterwards would take
+    -- freshly correct indices and rewrite them against a stale
+    -- ledger.
+    -- ==========================================
+    local ledger = dfhack.script_environment('refinish-ledger')
+    local ok_rm, rm_err = pcall(function() return ledger.remap() end)
+    if not ok_rm and _G.refinish_log_event then
+        _G.refinish_log_event("STARTUP WARNING: Ledger remap failed -> " .. tostring(rm_err))
+    end
+    local t_remap = os.clock() - t
+    tset('t_remap', t_remap)
+    t = os.clock()
+
     local t_load = 0
     if save_protocol == 'AUTOSAVE' or needs_legacy_load then
         if needs_legacy_load then
@@ -214,6 +327,18 @@ local function run_pipeline()
         t_load = os.clock() - t
         tset('t_load', t_load)
         if _G.refinish_log_event then _G.refinish_log_event(string.format("STARTUP: Payload restore complete (%.3fs).", t_load)) end
+    end
+
+    -- ==========================================
+    -- STEP 8: LEDGER WRITE
+    -- ==========================================
+    -- Snapshot id -> index for this session's injected materials.
+    -- Runs after the restore so the remap above always reads the
+    -- previous session's record, never one written this run.
+    -- ==========================================
+    local ok_lw, lw_err = pcall(function() return ledger.write() end)
+    if not ok_lw and _G.refinish_log_event then
+        _G.refinish_log_event("STARTUP WARNING: Ledger write failed -> " .. tostring(lw_err))
     end
 
     -- ==========================================

@@ -244,6 +244,95 @@ end
 
 
 -- ==========================================
+-- REAGENT FLAG MAP
+-- ==========================================
+-- The rest of the job item filter vocabulary, past the flags that
+-- build_reagent maps by hand. Those are explicit because they carry an
+-- alias (glass_material writes flags1.glass), read from outside the
+-- flags block (sand_bearing reads rgt_def root), or needed the comment.
+-- Everything here has a schema name identical to its struct field, so a
+-- table beats another ninety if statements.
+--
+-- Most of these have no reaction raw token behind them. No raw file can
+-- set them and no vanilla reaction exercises the path, so some will be
+-- inert in a reaction context. Exposed anyway: an inert flag costs a
+-- table row, and the only way to learn which ones bite is to set them.
+-- flags1.furniture had no token either and DF rendered it correctly in
+-- the reagent tooltip.
+--
+-- Bit numbers are from df.reaction_reagent_itemst, dumped live. The
+-- UNUSED bits are omitted deliberately.
+--
+-- Module level rather than local to the function: build_reagent runs
+-- once per reagent per reaction, and ArgMOD alone has thousands.
+local REAGENT_FLAG_MAP = {
+
+    -- Item state, origin and processing history.
+    flags1 = {
+        "improvable",             --  0  can still take decoration
+        "butcherable",            --  1  a corpse a butcher would accept
+        "millable",               --  2  goes in a quern
+        "allow_buryable",         --  3  permits coffin-bound items
+        "undisturbed",            --  5  vermin, not yet agitated
+        "collected",              --  6  gathered rather than found
+        "sharpenable",            --  7  knappable stone
+        "murdered",               --  8  corpse of a murder victim
+        "processable",            -- 11  plant with a process reaction
+        "cookable",               -- 13  a kitchen would accept it
+        "extract_bearing_plant",  -- 14
+        "extract_bearing_fish",   -- 15
+        "extract_bearing_vermin", -- 16
+        "processable_to_vial",    -- 17
+        "processable_to_barrel",  -- 19
+        "tameable_vermin",        -- 21
+        "nearby",                 -- 22  near the workshop specifically
+        "milk",                   -- 25  the item is milk
+        "milkable",               -- 26  a milkable creature
+        "lye_bearing",            -- 31
+    },
+
+    -- Material families, decoration state and stockpile designations.
+    flags2 = {
+        "dye",                --  0  is a dye
+        "dyeable",            --  1  can be dyed
+        "dyed",               --  2  already dyed
+        "sewn_imageless",     --  3  cloth with no image sewn into it
+        "glass_making",       --  4  a glassmaking material
+        "screw",              --  5  the mechanism part
+        "deep_material",      --  9  adamantine and friends
+        "melt_designated",    -- 10  flagged for melting
+        "allow_artifact",     -- 13  DANGER: lets a reagent take an
+                              --      artifact. non_artifact in flags3
+                              --      is the one you almost always want.
+        "plaster_containing", -- 22
+        "lye_milk_free",      -- 27  container holds neither lye nor milk
+        "blunt",              -- 28
+        "unengraved",         -- 29
+    },
+
+    -- Material classes and item circumstance.
+    flags3 = {
+        "non_absorbent",              --  2
+        "non_pressed",                --  3  not yet through a press
+        "allow_liquid_powder",        --  4
+        "any_craft",                  --  5  also set by the ANY_CRAFT
+                                      --      reagent type's own defaults
+        "food_storage",               --  7
+        "sand",                       --  9  distinct from flags1
+                                      --      sand_bearing, which is the
+                                      --      one Collect Sand uses
+        "can_use_location_reserved",  -- 10
+        "written_on",                 -- 11
+        "edged",                      -- 12
+        "on_ground",                  -- 13  lying loose, not stored
+        "divine",                     -- 14
+        "crafted_artifact",           -- 15  DANGER: requires an artifact
+        "gem",                        -- 20
+        "empty_or_water",             -- 21
+    },
+}
+
+-- ==========================================
 -- BUILD REAGENT
 -- ==========================================
 -- Constructs a single reaction_reagent_itemst from a reagent
@@ -390,6 +479,32 @@ local function build_reagent(rgt_def, base_reagent, mat_lookup, all_reagent_defs
     if flags.any_raw_material ~= nil then
         r.flags3.any_raw_material = flags.any_raw_material
     end
+
+    -- flags3 material-class filters. These cut across item types: a
+    -- wood filter matches a log, a bed and a wooden jug alike, so pair
+    -- them with an item type or with a flags1 category below.
+    --   wood   → [WOOD_MATERIAL]
+    --   stone  → [STONE_MATERIAL]
+    --   metal  → [METAL_MATERIAL]
+    --   hard   → [ANY_HARD_MATERIAL]
+    --   woven  → cloth that was woven, as opposed to felted or leather
+    --
+    --   grown_not_crafted → the item was harvested or grown rather than
+    --                 built. This is what separates a plump helmet from
+    --                 a wooden bed when both answer to flags2.plant.
+    --
+    --   non_artifact → excludes artifacts. Belongs on EVERY reagent
+    --                 that consumes its input, and especially on any
+    --                 reagent using item_type -1. Without it a wildcard
+    --                 reagent will eventually eat a legendary artifact
+    --                 and there is no way to get it back.
+    if flags.wood              ~= nil then r.flags3.wood              = flags.wood              end
+    if flags.stone             ~= nil then r.flags3.stone             = flags.stone             end
+    if flags.metal             ~= nil then r.flags3.metal             = flags.metal             end
+    if flags.hard              ~= nil then r.flags3.hard              = flags.hard              end
+    if flags.woven             ~= nil then r.flags3.woven             = flags.woven             end
+    if flags.grown_not_crafted ~= nil then r.flags3.grown_not_crafted = flags.grown_not_crafted end
+    if flags.non_artifact      ~= nil then r.flags3.non_artifact      = flags.non_artifact      end
     -- Item filter flags (flags1/flags2 level)
     -- After neutral reset, all bits are zero. These are rebuilt
     -- only from explicit schema values. Each flag maps to a DF
@@ -438,18 +553,88 @@ local function build_reagent(rgt_def, base_reagent, mat_lookup, all_reagent_defs
         r.flags1.unrotten = flags.unrotten
     end
 
-    -- flags2 carries the creature-material filters. These sit on an
-    -- untyped reagent (item_type -1) and do ALL of the filtering, so
-    -- dropping any one of them turns the reagent into a wildcard that
-    -- matches every item in the fortress.
-    --   body_part → [USE_BODY_COMPONENT]
-    --   bone      → [ANY_BONE_MATERIAL]
-    --   shell     → [ANY_SHELL_MATERIAL]
-    --   horn      → [ANY_HORN_MATERIAL]
-    if flags.body_part ~= nil then r.flags2.body_part = flags.body_part end
-    if flags.bone      ~= nil then r.flags2.bone      = flags.bone      end
-    if flags.shell     ~= nil then r.flags2.shell     = flags.shell     end
-    if flags.horn      ~= nil then r.flags2.horn      = flags.horn      end
+    -- flags2 carries the material-family filters. On an untyped reagent
+    -- (item_type -1) these do ALL of the filtering, so dropping every
+    -- one of them turns the reagent into a wildcard that matches every
+    -- item in the fortress. Confirmed live: a BODY_PART reagent whose
+    -- only flag was unrotten took a fuel bar and two pitch buckets.
+    --
+    -- Creature side:
+    --   body_part   → [USE_BODY_COMPONENT] item is a body part. This
+    --                 one is sufficient on its own; verified taking
+    --                 raw hides while leaving bars and buckets alone.
+    --   bone        → [ANY_BONE_MATERIAL]
+    --   shell       → [ANY_SHELL_MATERIAL]
+    --   horn        → [ANY_HORN_MATERIAL]
+    --   pearl       → [ANY_PEARL_MATERIAL]
+    --   ivory_tooth → [ANY_TOOTH_MATERIAL]
+    --   totemable   → skull and similar, what a totem can be made from
+    --   leather     → [ANY_LEATHER_MATERIAL] tanned hide only. A raw
+    --                 hide is a body part and answers to body_part.
+    --   silk        → [ANY_SILK_MATERIAL]
+    --   yarn        → [ANY_YARN_MATERIAL]
+    --   hair_wool   → hair and wool before spinning
+    --   soap        → [ANY_SOAP_MATERIAL]
+    --
+    -- Plant side:
+    --   plant       → [ANY_PLANT_MATERIAL] anything made of plant
+    --                 material, which includes wooden furniture and
+    --                 plant cloth, not just harvested plants. Vanilla
+    --                 pairs it with an item type: the gukil strings
+    --                 reagent is THREAD at mat -1/-1 carrying nothing
+    --                 else. Narrow it with an item type or with
+    --                 flags3.grown_not_crafted.
+    if flags.body_part   ~= nil then r.flags2.body_part   = flags.body_part   end
+    if flags.bone        ~= nil then r.flags2.bone        = flags.bone        end
+    if flags.shell       ~= nil then r.flags2.shell       = flags.shell       end
+    if flags.horn        ~= nil then r.flags2.horn        = flags.horn        end
+    if flags.pearl       ~= nil then r.flags2.pearl       = flags.pearl       end
+    if flags.ivory_tooth ~= nil then r.flags2.ivory_tooth = flags.ivory_tooth end
+    if flags.totemable   ~= nil then r.flags2.totemable   = flags.totemable   end
+    if flags.leather     ~= nil then r.flags2.leather     = flags.leather     end
+    if flags.silk        ~= nil then r.flags2.silk        = flags.silk        end
+    if flags.yarn        ~= nil then r.flags2.yarn        = flags.yarn        end
+    if flags.hair_wool   ~= nil then r.flags2.hair_wool   = flags.hair_wool   end
+    if flags.soap        ~= nil then r.flags2.soap        = flags.soap        end
+    if flags.plant       ~= nil then r.flags2.plant       = flags.plant       end
+
+    -- flags1 item categories. These are job item filter bits with no
+    -- reaction raw token behind them, so no raw file can express them.
+    -- Runtime injection can. Untested in a reaction context, which is
+    -- exactly why the furniture intake is worth trying first.
+    --   furniture      → item is furniture (bed, table, cabinet, door)
+    --   finished_goods → item is a finished good
+    --   ammo           → item is ammunition
+    if flags.furniture      ~= nil then r.flags1.furniture      = flags.furniture      end
+    if flags.finished_goods ~= nil then r.flags1.finished_goods = flags.finished_goods end
+    if flags.ammo           ~= nil then r.flags1.ammo           = flags.ammo           end
+
+    -- flags1 exclusions. Same story as the categories above: job item
+    -- filter bits with no raw token, so no raw file can set them.
+    --
+    --   not_bin → item is not a bin. The furniture category includes
+    --             containers, and a furniture reagent will happily take
+    --             a barrel off the stockpile floor. Confirmed live: the
+    --             first CHAR_FURNITURE job grabbed a barrel.
+    --
+    --   solid   → item is in a solid state. Worth pairing with any
+    --             item_type -1 reagent to keep liquids and powders out
+    --             of a filter that was only ever meant for objects.
+    if flags.not_bin ~= nil then r.flags1.not_bin = flags.not_bin end
+    if flags.solid   ~= nil then r.flags1.solid   = flags.solid   end
+
+    -- Everything else in the filter vocabulary. See REAGENT_FLAG_MAP
+    -- above the function. A schema flag not listed there and not
+    -- handled explicitly above is silently ignored, which is why
+    -- preflight validates flag names against the same source.
+    for bf_name, names in pairs(REAGENT_FLAG_MAP) do
+        local bf = r[bf_name]
+        for _, flag_name in ipairs(names) do
+            if flags[flag_name] ~= nil then
+                bf[flag_name] = flags[flag_name]
+            end
+        end
+    end
 
     -- Container linkage: contains field.
     -- The "contains" array on a reagent holds the INDICES (positions)
@@ -688,9 +873,34 @@ local function build_product(prod_def, base_product, mat_lookup)
     -- Mode 1: Direct mat_id -> resolved inorganic index
     if prod_def.mat_id then
         p.mat_type = (ptype and ptype.mat_type) or 0  -- default INORGANIC
+        -- A product type with mat_subtypes carries a builtin material
+        -- whose index selects WHICH form of it. COAL is the only one so
+        -- far: 0 is coke, 1 is charcoal. Neither is an inorganic, so the
+        -- lookup below can never find them, and letting it miss wrote
+        -- -1 into every coal bar RM has ever built.
+        --
+        -- An unmapped name fails hard rather than falling back. The
+        -- reason this went unnoticed for so long is that the old path
+        -- failed silently and produced a plausible looking item.
+        if ptype and ptype.mat_subtypes then
+            local sub = ptype.mat_subtypes[prod_def.mat_id]
+            if sub == nil then
+                local names = {}
+                for k in pairs(ptype.mat_subtypes) do names[#names + 1] = k end
+                table.sort(names)
+                if _G.refinish_log_event then
+                    _G.refinish_log_event(string.format(
+                        "MODULE REACT WARNING: product type '%s' has no mat_subtype '%s'. expected one of: %s. product skipped.",
+                        tostring(prod_def.type), tostring(prod_def.mat_id),
+                        table.concat(names, ", ")))
+                end
+                return nil
+            end
+            p.mat_index = sub
+
         -- A builtin-material product has no inorganic to find. Force
         -- -1 rather than leaning on the lookup missing.
-        if ptype and ptype.builtin then
+        elseif ptype and ptype.builtin then
             p.mat_index = -1
         else
             p.mat_index = mat_lookup[prod_def.mat_id] or -1
