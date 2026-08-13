@@ -197,11 +197,54 @@ local ITEMDEF_LISTS = {
     [df.item_type.INSTRUMENT] = "instruments",
     [df.item_type.AMMO]     = "ammo",
     [df.item_type.SIEGEAMMO] = "siege_ammo",
+    [df.item_type.SHIELD] = "shields",
+    [df.item_type.SHOES] = "shoes",
+    [df.item_type.HELM] = "helms",
+    [df.item_type.GLOVES] = "gloves",
+    [df.item_type.PANTS] = "pants",
 }
 
 local itemdef_cache = {}
 
+local itemdef_cache = {}
+
+-- ==========================================
+-- ITEMDEF CACHE INVALIDATION
+-- ==========================================
+-- The cache maps itemdef code to array position and is built once per
+-- list on first use. That was safe while every itemdef came from raws,
+-- because raws never move within a session.
+--
+-- Injected tools break it. They are appended at startup and removed
+-- again on the save protocol, so a cache built before a clear hands out
+-- positions for tools that are no longer there. It does it silently,
+-- because the miss branch below only fires when a code is ABSENT from
+-- the cache, never when the cached number is stale. A stale hit looks
+-- exactly like a good one.
+--
+-- Same failure shape as the ghost reaction cache use after free: a
+-- lookup table built from array positions that outlived the array.
+--
+-- Two ways in. The tool injector calls this directly when it can reach
+-- the module, and raises the global as a fallback for when it cannot.
+-- resolve_item_subtype checks the global on every call, which costs one
+-- table read and removes the ordering question entirely.
+-- ==========================================
+
+function invalidate_itemdef_cache()
+    itemdef_cache = {}
+    _G.refinish_itemdef_cache_dirty = false
+end
+
 local function resolve_item_subtype(item_type, code)
+    -- Cheap gate, checked first. Anything that adds or removes an
+    -- itemdef raises this flag, and one stale read here would write a
+    -- wrong subtype into a reagent that then silently matches the
+    -- wrong item for the rest of the session.
+    if _G.refinish_itemdef_cache_dirty then
+        invalidate_itemdef_cache()
+    end
+
     local list_name = ITEMDEF_LISTS[item_type]
     if not list_name then
         return -1
@@ -392,8 +435,25 @@ local function build_reagent(rgt_def, base_reagent, mat_lookup, all_reagent_defs
         -- Tool reagents name their subtype by itemdef code (see
         -- resolve_tool_subtype). Everything else clears the subtype so
         -- the template's own subtype can't leak through.
+        --
+        -- Two sources, checked in this order:
+        --
+        --   rtype.item_subtype   fixed on the type. JUG and LARGE_POT
+        --                        are always the same vanilla tool, so
+        --                        the code lives in the type table.
+        --
+        --   rgt_def.tool_id      supplied by the reagent, for the
+        --                        generic TOOL type. This is what lets a
+        --                        reaction name an injected tool without
+        --                        a type entry existing for it.
+        --
+        -- The type wins when both are present, so a fixed type can
+        -- never be redirected by a stray tool_id in a module's JSON.
+        -- Neither present means -1, which matches any tool at all.
         if rtype.item_subtype then
             r.item_subtype = resolve_tool_subtype(rtype.item_subtype)
+        elseif rtype.needs_tool_id and rgt_def.tool_id then
+            r.item_subtype = resolve_tool_subtype(rgt_def.tool_id)
         else
             r.item_subtype = -1
         end
@@ -426,7 +486,7 @@ local function build_reagent(rgt_def, base_reagent, mat_lookup, all_reagent_defs
         -- For everything else: force -1 to clear any stale value
         -- inherited from the base reagent (e.g. if the base was a
         -- boulder reagent from BRASS_MAKING with metal_ore pointing
-        -- at zinc, and we're building a METAL_BAR reagent for copper,
+        -- at zinc, and we're building a BAR reagent for copper,
         -- the leftover metal_ore would confuse DF).
         if rtype.needs_metal_id and rgt_def.metal_id then
             r.metal_ore = mat_lookup[rgt_def.metal_id] or -1
@@ -439,6 +499,16 @@ local function build_reagent(rgt_def, base_reagent, mat_lookup, all_reagent_defs
             r.reaction_class = rgt_def.reaction_class
         else
             r.reaction_class = rtype.reaction_class or ""
+        end
+
+        -- has_tool_use: use definition override (resolved from string), 
+        -- else type default, else wildcard (-1)
+        if rgt_def.has_tool_use then
+            r.has_tool_use = df.tool_uses[rgt_def.has_tool_use] or -1
+        elseif rtype.has_tool_use ~= nil then
+            r.has_tool_use = rtype.has_tool_use
+        else
+            r.has_tool_use = -1
         end
     end
 
@@ -549,6 +619,9 @@ local function build_reagent(rgt_def, base_reagent, mat_lookup, all_reagent_defs
     if flags.glass_material ~= nil then
         r.flags1.glass = flags.glass_material
     end
+    -- DF has no 'rotten' flag, only 'unrotten', and no inverse of it.
+    -- A reagent either demands fresh material or accepts anything.
+    -- Requiring rot specifically is not expressible.
     if flags.unrotten ~= nil then
         r.flags1.unrotten = flags.unrotten
     end

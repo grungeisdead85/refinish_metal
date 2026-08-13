@@ -353,6 +353,36 @@ local function broadcast_token_call()
             reactions_payload = response
         end
 
+        -- ---- RESOLVE TOOLS ----
+        -- Optional third data file. A module with no tools omits it and
+        -- nothing below fires. Same two modes as materials and
+        -- reactions: a JSON path, or a pre-built table for Lua modules.
+        --
+        -- Not validated here yet. The validator has no validate_tools,
+        -- so a malformed tools file reaches the injector, where every
+        -- field write is pcall guarded and logs the field that failed.
+        -- That degrades rather than crashes, but it is weaker than the
+        -- materials path and validate_tools should close it.
+        local tools_payload = nil
+        if response.tools_json then
+            local parsed, err = load_json_file(response.tools_json)
+            if not parsed then
+                rejected = rejected + 1
+                print(string.format("Refinish Metal: Module [%s] tools file error: %s",
+                    tostring(module_name), err))
+                if _G.refinish_log_event then
+                    _G.refinish_log_event(string.format(
+                        "MODULE ENGINE: [%s] tools file error: %s",
+                        tostring(module_name), err
+                    ))
+                end
+                goto continue
+            end
+            tools_payload = parsed
+        elseif response.tools then
+            tools_payload = response
+        end
+
         -- ---- VALIDATE ----
         local prefix = nil
 
@@ -403,11 +433,20 @@ local function broadcast_token_call()
             prefix = prefix or reactions_payload.module.prefix
         end
 
+        -- ---- PREFIX FROM TOOLS ----
+        -- Third fallback. Materials and reactions are checked above;
+        -- without this a tools-only module is rejected for having no
+        -- prefix even though it supplied one, which is why the
+        -- containers needed a dummy material entry to inject at all.
+        if not prefix and tools_payload and tools_payload.module then
+            prefix = tools_payload.module.prefix
+        end
+
         -- ---- PREFIX COLLISION CHECK ----
         if not prefix then
             rejected = rejected + 1
             print(string.format(
-                "Refinish Metal: Module [%s] supplied no prefix. Neither payload loaded.",
+                "Refinish Metal: Module [%s] supplied no prefix. No payload carried one.",
                 tostring(module_name)))
             if _G.refinish_log_event then
                 _G.refinish_log_event(string.format(
@@ -479,6 +518,7 @@ local function broadcast_token_call()
             materials  = materials_payload and materials_payload.materials or {},
             reactions  = reactions_payload and reactions_payload.reactions or {},
             categories = reactions_payload and reactions_payload.categories or {},
+            tools      = tools_payload and tools_payload.tools or {},
         }
 
         accepted = accepted + 1
@@ -768,6 +808,58 @@ function run_module_pipeline()
         -- Explicit closures rather than a varargs wrapper: no unpack,
         -- so there is no Lua version question to get wrong.
 
+        -- Tools
+        --
+        -- Ahead of materials and reactions both. Reactions resolve tool
+        -- subtypes at build time, so a reagent naming an injected tool
+        -- needs that tool already in world.raws.itemdefs.tools or it
+        -- silently resolves to -1 and matches any tool at all.
+        --
+        -- Its own pcall like every other step, so a bad tools file
+        -- costs the tools and nothing else.
+        if module.tools and #module.tools > 0 then
+            local ok, res = pcall(function()
+                local tool_injector = dfhack.script_environment('refinish-module-inject-tool')
+                return tool_injector.inject_tools(module.tools, prefix, module.name)
+            end)
+            if not ok then
+                report_failure("TOOL INJECTION", prefix, res)
+            end
+
+            -- ---- RESTORE WASHED ITEMS ----
+            -- Immediately after injection, while nothing else has had a
+            -- chance to read a subtype. Every item washed onto the
+            -- fallback before the last save gets pointed back at the
+            -- tool it came from.
+            --
+            -- Skipping this is what turns casks into cauldrons: a saved
+            -- subtype of 321 resolves against a raws-only array of 321
+            -- entries, falls out of range, and DF defaults to 0, which
+            -- is ITEM_TOOL_CAULDRON.
+            local ok_r, err_r = pcall(function()
+                dfhack.script_environment('refinish-tool-wash').restore()
+            end)
+            if not ok_r then
+                report_failure("TOOL RESTORE", prefix, err_r)
+            end
+
+            -- ---- SPRITES ----
+            -- Injection builds a fresh itemdef every session with every
+            -- texpos field at zero, because texpos values are resolved
+            -- from the graphics raws at raw load and an injected tool
+            -- never goes through it. Copying them from a vanilla donor
+            -- has to happen on every injection, not once.
+            --
+            -- Its own pcall: no sprite is a cosmetic failure and must
+            -- never take the pipeline down with it.
+            local ok_g, err_g = pcall(function()
+                dfhack.run_script('refinish-tool-graphics', 'copyall', prefix)
+            end)
+            if not ok_g then
+                report_failure("TOOL GRAPHICS", prefix, err_g)
+            end
+        end
+
         -- Materials
         if #module.materials > 0 then
             local ok, res = pcall(function()
@@ -888,6 +980,48 @@ function clear_module_assets()
         local mat_cleared = 0
         local rxn_cleared = 0
         local cat_cleared = 0
+
+        -- ---- STEP 0: SWEEP TOOLS ----
+        -- Before reactions, because a reagent holds a resolved tool
+        -- subtype and deleting the reaction first leaves nothing to
+        -- care about, while deleting the tool first would leave a live
+        -- reaction pointing at a position that has moved.
+        --
+        -- CALLER OBLIGATION, unchanged by this being wired up: any item
+        -- carrying an owned tool subtype has to be in the payload before
+        -- this runs. Call census() on the tool ledger to find out. A
+        -- save taken with owned tools live in the arrays is the same
+        -- class of corruption as one taken with module materials live.
+        -- Wash and clear are SEPARATE pcalls, deliberately.
+        --
+        -- Sharing one means a wash failure takes the clear down with
+        -- it, silently, and the save then writes with injected tools
+        -- still in the array. That produces "Missing Item Definition"
+        -- on the next load and a failed load, which is strictly worse
+        -- than an unwashed save.
+        --
+        -- Clearing must happen even when washing could not.
+        -- Logged inline rather than through report_failure, which is a
+        -- local inside run_module_pipeline and is not in scope here.
+        -- Calling it from this function throws, kills the sweep partway
+        -- through the pairs() loop, and leaves every module after this
+        -- one in hash order completely uncleared.
+        local ok_w, err_w = pcall(function()
+            dfhack.script_environment('refinish-tool-wash').wash(prefix)
+        end)
+        if not ok_w and _G.refinish_log_event then
+            _G.refinish_log_event(string.format(
+                "TOOL WASH FAILED [%s]: %s", tostring(prefix), tostring(err_w)))
+        end
+
+        local ok_c, err_c = pcall(function()
+            local tool_injector = dfhack.script_environment('refinish-module-inject-tool')
+            tool_injector.clear_tools(prefix)
+        end)
+        if not ok_c and _G.refinish_log_event then
+            _G.refinish_log_event(string.format(
+                "TOOL CLEAR FAILED [%s]: %s", tostring(prefix), tostring(err_c)))
+        end
 
         -- ---- STEP 2: SWEEP REACTIONS (LIFO) ----
         for i = #reactions - 1, 0, -1 do

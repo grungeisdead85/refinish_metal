@@ -566,8 +566,8 @@ All thirty-one entries in `REAGENT_TYPES`, grouped by what they match.
 
 | Type | Matches | Also needs |
 |---|---|---|
-| `METAL_BAR` | One specific metal | `mat_id` |
-| `BAR_ANY` | Any bar at all | |
+| `BAR` | One specific metal | `mat_id` |
+| `BAR` | Any bar at all | |
 | `COAL` | Charcoal or coke | |
 | `BAR_POTASH` | A potash bar | |
 | `BAR_ASH` | An ash bar | |
@@ -606,7 +606,7 @@ All thirty-one entries in `REAGENT_TYPES`, grouped by what they match.
 | Type | Matches | Also needs |
 |---|---|---|
 | `BLOCKS` | Blocks of one material | `mat_id` |
-| `BLOCKS_ANY` | Blocks of anything | |
+| `BLOCKS` | Blocks of anything | |
 | `ROUGH` | A specific rough gem | `mat_id` |
 | `ROUGH_ANY` | Any rough gem, by tag | `reaction_class` |
 | `STATUE` | A statue | |
@@ -852,7 +852,7 @@ can end up worth less than its own ingredients.
 `value_from_reaction` is not part of RM's schema. RM ignores unknown fields, so
 it passes through untouched and your Lua file reads it. The template's
 `calculate_weighted_value` averages the live material values of the reaction's
-`METAL_BAR` reagents, weighted by quantity.
+`BAR` reagents, weighted by quantity.
 
 ### 7.4 Resolving materials at runtime
 

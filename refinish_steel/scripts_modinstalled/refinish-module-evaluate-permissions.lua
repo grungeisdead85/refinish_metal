@@ -164,7 +164,7 @@ end
 -- every metal ID that the reaction requires as input. Only
 -- metal-bearing reagent types are checked:
 --
---   METAL_BAR  - mat_id is the required metal (e.g. "COPPER")
+--   BAR  - mat_id is the required metal (e.g. "COPPER")
 --   ORE_OF     - metal_id is the required metal (e.g. "ZINC")
 --
 -- Other reagent types (COAL, FLUX, BOULDER, BAG, etc.) do not
@@ -186,8 +186,8 @@ local function extract_required_metals(reagents)
     for _, rgt in ipairs(reagents) do
         local rtype = types.REAGENT_TYPES[rgt.type]
         if rtype then
-            -- METAL_BAR: the mat_id field names the specific metal
-            if rgt.type == "METAL_BAR" and rgt.mat_id then
+            -- BAR: the mat_id field names the specific metal
+            if rgt.type == "BAR" and rgt.mat_id then
                 required[rgt.mat_id] = true
 
             -- ORE_OF: the metal_id field names the target metal
@@ -610,6 +610,86 @@ function evaluate_and_inject()
         end
 
         ::next_module::
+    end
+
+    -- ==========================================
+    -- CUSTOM BUILDING PERMISSIONS
+    -- ==========================================
+    -- A custom workshop that parses cleanly still never appears in
+    -- the build menu unless the civ lists it in
+    -- entity_raw.workshops.permitted_building_id. That is the exact
+    -- counterpart of permitted_reaction_id above, and nothing was
+    -- granting it, so module buildings loaded and stayed invisible.
+    --
+    -- Ownership is decided by prefix, the same vocabulary
+    -- clear_module_assets sweeps with. A workshop whose code begins
+    -- with a registered module prefix belongs to that module. No new
+    -- schema: a module that ships a building simply names it with its
+    -- own prefix, which it has to do anyway.
+    --
+    -- WHY THIS NEEDS NO CLEAR PASS
+    --
+    -- Reaction permissions must be cleared before a save because they
+    -- hold indexes into the reactions array, and that array is torn
+    -- down every data cycle. Building permissions hold indexes into
+    -- world.raws.buildings, which RM never touches. Those indexes are
+    -- fixed at worldgen and outlive every wash, so the reference can
+    -- never dangle.
+    --
+    -- entity_raw is rebuilt from the raw files on load in any case,
+    -- so nothing written here persists into the save.
+    -- ==========================================
+    local bld_injected = 0
+
+    do
+        -- Resolve each module prefix to the workshops it owns. Walking
+        -- the live raws rather than trusting a stored index, because
+        -- raw load order shifts when any other mod adds a workshop.
+        local owned = {}
+        for _, ws in ipairs(df.global.world.raws.buildings.workshops) do
+            for prefix, module in pairs(registry) do
+                if string.sub(ws.code, 1, #prefix) == prefix then
+                    table.insert(owned, { ws = ws, module = module })
+                    break
+                end
+            end
+        end
+
+        if #owned > 0 then
+            for code, entity_raw in pairs(first_raw_for_code) do
+                local ok = pcall(function()
+                    local permitted = entity_raw.workshops.permitted_building_id
+
+                    -- Existing grants, so a re-run does not duplicate.
+                    -- Rebuilt per entity rather than kept across them,
+                    -- since each raw has its own list.
+                    local have = {}
+                    for _, bid in ipairs(permitted) do have[bid] = true end
+
+                    for _, entry in ipairs(owned) do
+                        if not have[entry.ws.id] then
+                            permitted:insert('#', entry.ws.id)
+                            have[entry.ws.id] = true
+                            bld_injected = bld_injected + 1
+                        end
+                    end
+                end)
+
+                if not ok and _G.refinish_log_event then
+                    _G.refinish_log_event(string.format(
+                        "MODULE PERMISSIONS WARNING: Could not grant buildings to [%s].", code))
+                end
+            end
+
+            if _G.refinish_log_event then
+                local names = {}
+                for _, entry in ipairs(owned) do table.insert(names, entry.ws.code) end
+                table.sort(names)
+                _G.refinish_log_event(string.format(
+                    "MODULE PERMISSIONS: %d building grant(s) across %d civ(s): %s",
+                    bld_injected, count_table(first_raw_for_code), table.concat(names, ", ")))
+            end
+        end
     end
 
     if _G.refinish_log_event then

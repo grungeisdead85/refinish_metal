@@ -135,6 +135,17 @@ local function is_memory_physically_clear()
     for _, cat in ipairs(df.global.world.raws.reactions.reaction_categories) do
         if rm_owned(cat.id) then return false end
     end
+
+    -- Injected tools. Omitting these meant this returned true with
+    -- containers still in world.raws.itemdefs.tools, so a failed tool
+    -- clear was invisible and the save went ahead regardless. The save
+    -- then records the itemdef ids, and the next load fails outright
+    -- with "Missing Item Definition". Same class of hole as testing
+    -- only REFINISH_STEEL_ above, and the same fix.
+    for _, td in ipairs(df.global.world.raws.itemdefs.tools) do
+        local ok, id = pcall(function() return td.id end)
+        if ok and type(id) == 'string' and rm_owned(id) then return false end
+    end
     local player_civ = df.historical_entity.find(df.global.plotinfo.civ_id)
     if player_civ and player_civ.entity_raw then
         local permitted = player_civ.entity_raw.workshops.permitted_reaction_id

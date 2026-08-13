@@ -53,6 +53,30 @@ import sys
 # and missed the needs_mat_id class of failure entirely. Do not
 # reintroduce hardcoded copies.
 # ===============================================================
+def _capture_lua_table(text, name):
+    """Return a match-like object holding the full body of a top level
+    Lua table, counting braces so nested entries do not end it early."""
+    start = re.search(r'^' + name + r'\s*=\s*\{', text, re.M)
+    if not start:
+        return None
+    i = start.end()
+    depth = 1
+    while i < len(text) and depth:
+        c = text[i]
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+        i += 1
+
+    class _M:
+        def __init__(self, body):
+            self._body = body
+        def group(self, _n):
+            return self._body
+
+    return _M(text[start.end():i - 1])
+
 def load_engine_types(path):
     text = open(path, encoding='utf-8', errors='replace').read().replace('\r', '')
 
@@ -60,15 +84,33 @@ def load_engine_types(path):
         m = re.search(r'^' + name + r' = \{(.*?)^\}', text, re.S | re.M)
         if not m:
             return set()
-        return set(re.findall(r'^    ([A-Z_0-9]+)\s*=', m.group(1), re.M))
+        return set(re.findall(r'^[ \t]{4}([A-Z_0-9]+)\s*=', m.group(1), re.M))
 
     # Reagent types, with the two per-type requirements the validator
     # enforces. Value is (needs_mat_id, needs_metal_id).
     reagents = {}
-    m = re.search(r'^REAGENT_TYPES = \{(.*?)^\}', text, re.S | re.M)
+    # Brace-match the table rather than regex to the first line that
+    # starts with a closing brace. Multi-line entries such as COKE
+    # contain their own column-zero-ish closers, and CRLF endings put a
+    # stray \r before them, so a non-greedy ^\} cuts the table short and
+    # silently hides every type defined after the first nested entry.
+    m = _capture_lua_table(text, 'REAGENT_TYPES')
     if m:
-        for entry in re.finditer(r'^    ([A-Z_0-9]+) = \{(.*?)^    \}',
-                                 m.group(1), re.S | re.M):
+        # Two entry shapes exist in the engine table and both are valid:
+        #
+        #   COKE = {              multi-line, closes on its own line
+        #       item_type = 0,
+        #   },
+        #
+        #   MEAT   = { item_type = ..., needs_mat_id = false },
+        #                         single line, aligned padding on =
+        #
+        # Matching only the first shape silently dropped every one-liner,
+        # which is most of the organic intake block, and reported them
+        # back as unrecognized reagent types.
+        for entry in re.finditer(
+                r'^[ \t]+([A-Z_0-9]+)\s*=\s*\{(.*?)\}\s*,?\s*$',
+                m.group(1), re.S | re.M):
             body = entry.group(2)
             reagents[entry.group(1)] = (
                 bool(re.search(r'needs_mat_id\s*=\s*true', body)),
@@ -496,15 +538,15 @@ def check_reagent(g, j, tag, engine):
                  "%s: BODY_PART is item type -1 and the flags do all the "
                  "filtering. Without flags.body_part it matches every item "
                  "in the fortress, including bars, buckets and furniture." % t)
-    if ty == 'ANY_ITEM':
-        # ANY_ITEM has no item type at all, so an empty flags block is a
+    if ty == 'ANY':
+        # ANY has no item type at all, so an empty flags block is a
         # reagent that matches literally everything.
         narrowing = [f for f in flags
                      if f not in ('preserve', 'non_artifact', 'unrotten', 'solid')
                      and flags.get(f)]
         if not narrowing:
             warn('wildcard_reagent',
-                 "%s: ANY_ITEM is item type -1 with nothing pinning it. It "
+                 "%s: ANY is item type -1 with nothing pinning it. It "
                  "needs at least one filtering flag or it matches every item "
                  "in the fortress." % t)
         if flags.get('furniture') and not flags.get('not_bin'):

@@ -236,7 +236,7 @@ end
 -- ingredients. Reading live values at load time keeps the alloy
 -- correctly positioned in whatever economy it lands in.
 --
--- Only METAL_BAR reagents count. Flux, coal, boulders and powders
+-- Only BAR reagents count. Flux, coal, boulders and powders
 -- have no meaningful price signal for an alloy.
 --
 -- HOW TO USE IT:
@@ -263,7 +263,7 @@ local function calculate_weighted_value(reagents)
     local weighted_sum   = 0
 
     for _, rgt in ipairs(reagents) do
-        if rgt.type == "METAL_BAR" and rgt.mat_id then
+        if rgt.type == "BAR" and rgt.mat_id then
             local base_val = value_lookup[rgt.mat_id] or 1
             local qty      = rgt.quantity or 1
             weighted_sum   = weighted_sum + (base_val * qty)

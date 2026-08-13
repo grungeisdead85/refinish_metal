@@ -42,95 +42,23 @@
 -- ==========================================
 REAGENT_TYPES = {
 
-    -- ----- ORGANIC INTAKE -----
-    -- All of these wildcard the material deliberately. Organic mat_type
-    -- is computed per species (plant = 419 + that plant's own local
-    -- material index, creature = 19 + its own), and those local indices
-    -- are NOT stable across species. Olive proves it: its local material
-    -- 1 is frozen olive oil where nearly every other tree has wood, so a
-    -- fixed mat_type of 420 would quietly accept oil in a wood reaction.
-    --
-    -- Filtering therefore happens entirely through flags in the JSON.
-    -- Vanilla does the same: the gukil strings reagent is THREAD at
-    -- mat -1/-1 carrying nothing but ANY_PLANT_MATERIAL.
-    --
-    -- Named rather than numbered: an off by one in the item enum
-    -- silently swaps the item kind.
-
     -- Everything. Flags MUST filter or this matches every item in the
     -- fortress. For cross-cutting filters no single item type can
     -- express, such as furniture combined with a wood material.
-    ANY_ITEM     = { item_type = -1,                       mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- A harvested plant, what a farm plot yields.
-    PLANT        = { item_type = df.item_type.PLANT,        mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- Leaves, fruit, nuts. What a plant grows rather than is.
-    PLANT_GROWTH = { item_type = df.item_type.PLANT_GROWTH, mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    SEEDS        = { item_type = df.item_type.SEEDS,        mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- A whole body, as distinct from CORPSEPIECE which is a part.
-    CORPSE       = { item_type = df.item_type.CORPSE,       mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- Bones, skulls, raw hides, teeth, shells. BODY_PART below reaches
-    -- the same items via flags at item_type -1; this pins the type.
-    CORPSEPIECE  = { item_type = df.item_type.CORPSEPIECE,  mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- Tanned leather. A raw hide is CORPSEPIECE, not this.
-    SKIN_TANNED  = { item_type = df.item_type.SKIN_TANNED,  mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- Spun thread. Plant, silk and yarn all arrive as this item type,
-    -- separated by flags2.plant / silk / yarn.
-    THREAD       = { item_type = df.item_type.THREAD,       mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    CLOTH        = { item_type = df.item_type.CLOTH,        mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- Fat and tallow. Dimensioned, so quantity counts units not items.
-    GLOB         = { item_type = df.item_type.GLOB,         mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- Organs and cuts. Confirmed live: a heart is MEAT, not
-    -- CORPSEPIECE, and neither body_part nor a CORPSEPIECE reagent can
-    -- reach one. Arms, heads and bones are CORPSEPIECE. The split
-    -- follows the stockpile: organs are food, limbs are corpses.
-    MEAT         = { item_type = df.item_type.MEAT,         mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- Prepared fish, as distinct from FISH_RAW.
-    FISH         = { item_type = df.item_type.FISH,         mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-    FISH_RAW     = { item_type = df.item_type.FISH_RAW,     mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    EGG          = { item_type = df.item_type.EGG,          mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-    CHEESE       = { item_type = df.item_type.CHEESE,       mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- Vermin remains. Its own stockpile category, so its own type.
-    REMAINS      = { item_type = df.item_type.REMAINS,      mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- What tree felling leaves behind. Item type 91, distinct from
-    -- WOOD at 5, and nothing in vanilla consumes it.
-    BRANCH       = { item_type = df.item_type.BRANCH,       mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- A skull mounted as a totem. Item type 59, no longer a corpse
-    -- piece, so no body_part reagent will reach one.
-    TOTEM        = { item_type = df.item_type.TOTEM,        mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- Prepared meals and raw food. FOOD is 72, DRINK is 69.
-    FOOD         = { item_type = df.item_type.FOOD,         mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-    DRINK        = { item_type = df.item_type.DRINK,        mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- Extracts, oils, syrups. Dimensioned and container-bound, so a
-    -- reagent needs in_container plus a matching container reagent.
-    LIQUID_MISC  = { item_type = df.item_type.LIQUID_MISC,  mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-
-    -- Paper. SHEET is 90, BOOK is 89. Both carry flags3.written_on,
-    -- which is how a reaction avoids consuming a written work.
-    SHEET        = { item_type = df.item_type.SHEET,        mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
-    BOOK         = { item_type = df.item_type.BOOK,         mat_type = -1, mat_index = -1, reaction_class = "", needs_mat_id = false, needs_metal_id = false },
+    ANY = { 
+        item_type = -1,         -- ANY ITEM TYPE       
+        mat_type = -1,          -- ANY MAT_TYPE (NO MAGNIFYING GLASS)
+        mat_index = -1,         -- ANY MAT_INDEX
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
 
     -- ----- BARS -----
-    -- A bar of a specific inorganic metal (iron, copper, etc.)
-    METAL_BAR = {
-        item_type      = 0,      -- df.item_type.BAR
-        mat_type       = 0,      -- INORGANIC
+    -- Inorganic bar resolved by mat_id
+    BAR = {
+        item_type      = df.item_type.BAR,      --  0, no subtypes
+        mat_type       = 0,     -- INORGANIC
         mat_index      = nil,    -- resolved from mat_id at build time
         reaction_class = "",
         needs_mat_id   = true,
@@ -139,195 +67,8 @@ REAGENT_TYPES = {
 
     -- Any bar (no material restriction)
     BAR_ANY = {
-        item_type      = 0,      -- df.item_type.BAR
+        item_type      = df.item_type.BAR,      --  0, no subtypes
         mat_type       = -1,
-        mat_index      = -1,
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
-    },
-
-    -- Any coal bar (charcoal or coke wildcard)
-    COKE = {
-        item_type      = 0,      -- df.item_type.BAR
-        mat_type       = 7,      -- COAL material class
-        mat_index      = -1,     -- wildcard
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
-    },
-
-    -- ----- BOULDERS -----
-    -- A boulder of a specific inorganic material
-    BOULDER = {
-        item_type      = 4,      -- df.item_type.BOULDER
-        mat_type       = 0,      -- INORGANIC
-        mat_index      = nil,    -- resolved from mat_id
-        reaction_class = "",
-        needs_mat_id   = true,
-        needs_metal_id = false,
-    },
-
-    -- Any inorganic boulder (INORGANIC:NONE). The magnifying glass
-    -- material selector ONLY appears when mat_type=0 (INORGANIC)
-    -- and mat_index=-1 (NONE). Using mat_type=-1 makes the reagent
-    -- a full wildcard across all material types, which suppresses
-    -- the selector entirely. Source: DF wiki material token table.
-    BOULDER_ANY = {
-        item_type      = 4,      -- df.item_type.BOULDER
-        mat_type       = 0,      -- INORGANIC (required for magnifying glass)
-        mat_index      = -1,     -- NONE (wildcard within inorganics)
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
-    },
-
-    -- Any flux-bearing boulder (limestone, marble, etc.)
-    -- DF matches via reaction_class on the reagent material
-    FLUX = {
-        item_type      = 4,      -- df.item_type.BOULDER
-        mat_type       = -1,
-        mat_index      = -1,
-        reaction_class = "FLUX",
-        needs_mat_id   = false,
-        needs_metal_id = false,
-    },
-
-    -- Any ore boulder that smelts to a specific metal.
-    -- Engine resolves metal_id to an inorganic index and sets
-    -- the reagent.metal_ore field. DF then matches any boulder
-    -- whose metal_ore table contains that metal.
-    -- Pattern source: BRASS_MAKING [REAGENT:A:1:METAL_ORE:ZINC]
-    ORE_OF = {
-        item_type      = 4,      -- df.item_type.BOULDER
-        mat_type       = -1,
-        mat_index      = -1,
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = true,   -- resolves metal_id -> reagent.metal_ore
-    },
-
-    -- ----- POWDERS -----
-    -- A powder (sand, plaster, etc.). Usually paired with a BAG
-    -- via the container/contents linkage.
-    POWDER = {
-        item_type      = 70,     -- df.item_type.POWDER_MISC
-        mat_type       = nil,    -- resolved from mat_id if given, else -1
-        mat_index      = nil,    -- resolved from mat_id if given, else -1
-        reaction_class = "",
-        needs_mat_id   = false,  -- optional: if mat_id given, resolve it
-        needs_metal_id = false,
-    },
-
-    -- Any powder — magnifying glass attempt. Wiki says POWDER_MISC
-    -- uses NONE:NONE, but that didn't work. Trying INORGANIC:NONE
-    -- since runtime injection bypassed raws limitations for BOULDER.
-    POWDER_ANY = {
-        item_type      = 70,     -- df.item_type.POWDER_MISC
-        mat_type       = 0,      -- INORGANIC:NONE attempt
-        mat_index      = -1,     -- NONE
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
-    },
-
-    -- ----- CONTAINERS -----
-    -- An empty bag. Used as a container for powders.
-    BAG = {
-        item_type      = 31,     -- df.item_type.BAG
-        mat_type       = -1,
-        mat_index      = -1,
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
-    },
-
-    -- A generic container (any item). Too broad for practical use —
-    -- DF will grab bars, weapons, etc. as "containers." Prefer
-    -- BUCKET or BARREL for liquid reactions.
-    -- Pattern source: MAKE_SOAP_FROM_TALLOW reagents[1] ("lye container")
-    CONTAINER = {
-        item_type      = -1,     -- any item that can contain liquid
-        mat_type       = -1,
-        mat_index      = -1,
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
-    },
-
-    -- A bucket. The standard liquid container for workshop reactions.
-    -- item_type 18 = df.item_type.BUCKET
-    BUCKET = {
-        item_type      = 18,     -- df.item_type.BUCKET
-        mat_type       = -1,
-        mat_index      = -1,
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
-    },
-
-    -- A barrel. Alternative liquid container, larger capacity.
-    -- item_type 17 = df.item_type.BARREL
-    BARREL = {
-        item_type      = 17,     -- df.item_type.BARREL
-        mat_type       = -1,
-        mat_index      = -1,
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
-    },
-
-    -- ----- LIQUIDS -----
-    -- A liquid (lye, water, milk, etc.) stored in a container.
-    -- Must be paired with a CONTAINER reagent via contains linkage.
-    -- The liquid reagent gets IN_CONTAINER=true; the container gets
-    -- PRESERVE_REAGENT=true and contains pointing to the liquid.
-    -- Pattern source: MAKE_SOAP_FROM_TALLOW reagents[0] ("lye")
-
-    -- Water specifically. mat_type=6 is the builtin water material.
-    -- Discovered via: dfhack.matinfo.find('WATER') -> <material 6:-1>
-    WATER = {
-        item_type      = 73,     -- df.item_type.LIQUID_MISC
-        mat_type       = 6,      -- builtin water material type
-        mat_index      = -1,
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
-    },
-
-    -- Generic liquid. mat_type resolved from mat_id if given.
-    -- For non-inorganic liquids (lye=11, milk, etc.) the mat_type
-    -- must be specified directly since they aren't in the inorganic
-    -- array. Currently only supports builtin material types.
-    LIQUID = {
-        item_type      = 73,     -- df.item_type.LIQUID_MISC
-        mat_type       = nil,    -- resolved from context
-        mat_index      = -1,
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
-    },
-
-    -- An inorganic liquid: acids, alkalis, solutions. Unlike WATER
-    -- (a builtin material at mat_type 6) these live in the inorganic
-    -- array, so mat_type is 0 and the index is resolved from mat_id.
-    -- Pairs with a BUCKET/BARREL/JUG reagent via contains linkage,
-    -- exactly like WATER does.
-    LIQUID_INORGANIC = {
-        item_type      = 73,     -- df.item_type.LIQUID_MISC
-        mat_type       = 0,      -- INORGANIC
-        mat_index      = nil,    -- resolved from mat_id
-        reaction_class = "",
-        needs_mat_id   = true,
-        needs_metal_id = false,
-    },
-
-    -- A potash bar. mat_type 8 is the builtin POTASH material —
-    -- confirmed against the builtin index list (6=WATER, 7=COAL,
-    -- 8=POTASH, 9=ASH, 10=PEARLASH, 11=LYE).
-    BAR_POTASH = {
-        item_type      = 0,      -- df.item_type.BAR
-        mat_type       = 8,      -- builtin POTASH
         mat_index      = -1,
         reaction_class = "",
         needs_mat_id   = false,
@@ -342,8 +83,8 @@ REAGENT_TYPES = {
     --
     -- ASH is verified as 9 from the GLAZE_CRAFT_ASH path map.
     BAR_ASH = {
-        item_type      = 0,
-        mat_type       = df.builtin_mats.ASH,
+        item_type      = df.item_type.BAR,      --  0, no subtypes
+        mat_type       = 9,      -- df.builtin_mats.ASH
         mat_index      = -1,
         reaction_class = "",
         needs_mat_id   = false,
@@ -351,9 +92,100 @@ REAGENT_TYPES = {
     },
 
     BAR_PEARLASH = {
-        item_type      = 0,
-        mat_type       = df.builtin_mats.PEARLASH,
+        item_type      = df.item_type.BAR,      --  0, no subtypes
+        mat_type       = 10,     -- df.builtin_mats.PEARLASH
         mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- A potash bar. mat_type 8 is the builtin POTASH material —
+    -- confirmed against the builtin index list (6=WATER, 7=COAL,
+    -- 8=POTASH, 9=ASH, 10=PEARLASH, 11=LYE).
+    BAR_POTASH = {
+        item_type      = df.item_type.BAR,      --  0, no subtypes
+        mat_type       = 8,      -- df.builtin_mats.POTASH
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- Coal wildcard reagent
+    BAR_COAL = {
+        item_type      = df.item_type.BAR,      --  0, no subtypes
+        mat_type       = 7,      -- COAL material class
+        mat_index      = -1,     -- Coal reagent wildcard (does not require refined coal)
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- Charcoal bars
+    BAR_CHARCOAL = {
+        item_type      = df.item_type.BAR,      --  0, no subtypes
+        mat_type       = 7,      -- COAL material class
+        mat_index      = 1,      -- CHARCOAL
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- Coke bars
+    BAR_COKE = {
+        item_type      = df.item_type.BAR,      --  0, no subtypes
+        mat_type       = 7,      -- COAL material class
+        mat_index      = 0,      -- COKE
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+
+    -- ----- BLOCKS -----
+    -- Inorganic blocks resolved by mat_id
+    BLOCKS = {
+        item_type      = df.item_type.BLOCKS,         --  2, no subtypes
+        mat_type       = 0,         -- INORGANIC
+        mat_index      = nil,       -- resolved from mat_id, -1 for magnifying glass
+        reaction_class = "",
+        needs_mat_id   = true,
+        needs_metal_id = false,
+    },
+
+    -- Blocks of any material. BLOCKS above requires a mat_id; this is
+    -- the wildcard form, used where the block material is whatever the
+    -- reaction happens to consume.
+    BLOCKS_ANY = {
+        item_type      = df.item_type.BLOCKS,         --  2, no subtypes
+        mat_type       = -1,        -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- ----- BOULDERS -----
+    -- A boulder of a specific inorganic material
+    BOULDER = {
+        item_type      = df.item_type.BOULDER,      --  4, no subtypes
+        mat_type       = 0,      -- INORGANIC
+        mat_index      = nil,    -- resolved from mat_id, -1 for magnifying glass
+        reaction_class = "",
+        needs_mat_id   = true,
+        needs_metal_id = false,
+    },
+
+    -- Any inorganic boulder (INORGANIC:NONE). The magnifying glass
+    -- material selector ONLY appears when mat_type=0 (INORGANIC)
+    -- and mat_index=-1 (NONE). Using mat_type=-1 makes the reagent
+    -- a full wildcard across all material types, which suppresses
+    -- the selector entirely. Source: DF wiki material token table.
+    BOULDER_ANY = {
+        item_type      = df.item_type.BOULDER,      --  4, no subtypes
+        mat_type       = 0,      -- INORGANIC (required for magnifying glass)
+        mat_index      = -1,     -- NONE (wildcard within inorganics)
         reaction_class = "",
         needs_mat_id   = false,
         needs_metal_id = false,
@@ -373,15 +205,355 @@ REAGENT_TYPES = {
         needs_metal_id = false,
     },
 
-    -- Blocks of any material. BLOCKS above requires a mat_id; this is
-    -- the wildcard form, used where the block material is whatever the
-    -- reaction happens to consume.
-    BLOCKS_ANY = {
-        item_type      = 2,
+    -- Any flux-bearing boulder (limestone, marble, etc.)
+    -- DF matches via reaction_class on the reagent material
+    FLUX = {
+        item_type      = df.item_type.BOULDER,      --  4, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "FLUX",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- Any ore boulder that smelts to a specific metal.
+    -- Engine resolves metal_id to an inorganic index and sets
+    -- the reagent.metal_ore field. DF then matches any boulder
+    -- whose metal_ore table contains that metal.
+    -- Pattern source: BRASS_MAKING [REAGENT:A:1:METAL_ORE:ZINC]
+    ORE_OF = {
+        item_type      = df.item_type.BOULDER,      --  4, no subtypes
         mat_type       = -1,
         mat_index      = -1,
         reaction_class = "",
         needs_mat_id   = false,
+        needs_metal_id = true,   -- resolves metal_id -> reagent.metal_ore
+    },
+
+    -- ----- ROCKS -----
+    -- A rock item (knapping, sharp rocks)
+    ROCK = {
+        item_type      = df.item_type.ROCK,     --  76, no subtypes
+        mat_type       = 0,      -- INORGANIC
+        mat_index      = nil,    -- resolve from mat_id, -1 for magnifying glass
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    ROCK_ANY = {
+        item_type      = df.item_type.ROCK,     --  76, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- ----- WOOD -----
+    -- A standard wooden log.
+    WOOD = {
+        item_type      = df.item_type.WOOD,      --  5, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- Item type 91, distinct from WOOD at 5, and nothing in vanilla 
+    -- consumes it. Vanilla branch does not stockpile. MAKING_FUEL does
+    -- not use this, it injects MAKING_FUEL_BRANCH instead.
+    BRANCH = { 
+        item_type = df.item_type.BRANCH,         --  91, no subtypes      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- GEMS -----
+    SMALLGEM = {
+        item_type      = df.item_type.SMALLGEM,      --  1, no subtypes
+        mat_type       = 0,      -- INORGANIC
+        mat_index      = nil,    --- resolve from mat_id, -1 for magnifying glass
+        reaction_class = "",
+        needs_mat_id   = true,
+        needs_metal_id = false,
+    },
+
+    SMALLGEM_ANY = {
+        item_type      = df.item_type.SMALLGEM,      --  1, no subtypes
+        mat_type       = -1,     -- Any mat_type (no magnifying glass)
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- A rough gemstone or uncut glass piece
+    ROUGH = {
+        item_type      = df.item_type.ROUGH,      --  3, no subtypes
+        mat_type       = 0,      -- INORGANIC
+        mat_index      = nil,    --- resolve from mat_id, -1 for magnifying glass
+        reaction_class = "",
+        needs_mat_id   = true,
+        needs_metal_id = false,
+    },
+
+    ROUGH_ANY = {
+        item_type      = df.item_type.ROUGH,      --  3, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = nil,    --- resolve from mat_id, -1 for magnifying glass
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    GEM = {
+        item_type      = df.item_type.GEM,      --  44, no subtypes
+        mat_type       = 0,      -- INORGANIC
+        mat_index      = nil,    --- resolve from mat_id, -1 for magnifying glass
+        reaction_class = "",
+        needs_mat_id   = true,
+        needs_metal_id = false,
+    },
+
+    GEM_ANY = {
+        item_type      = df.item_type.GEM,      --  3, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- ----- POWDERS -----
+    -- A powder (sand, plaster, etc.). Usually paired with a BAG
+    -- via the container/contents linkage.
+    -- "POWDER" has hardcoded entries in refinish-module-react.lua to handle special cases like sand
+    -- DO NOT RENAME OR CHANGE WITHOUT CHECKING THAT
+    POWDER = {
+        item_type      = df.item_type.POWDER_MISC,     --  70, no subtypes
+        mat_type       = nil,    -- resolved from mat_id if given, else -1
+        mat_index      = nil,    -- resolved from mat_id if given, else -1
+        reaction_class = "",
+        needs_mat_id   = false,  -- optional: if mat_id given, resolve it
+        needs_metal_id = false,
+    },
+
+    -- Any powder — magnifying glass attempt. Wiki says POWDER_MISC
+    -- uses NONE:NONE, but that didn't work. Trying INORGANIC:NONE
+    -- since runtime injection bypassed raws limitations for BOULDER.
+    POWDER_ANY = {
+        item_type      = df.item_type.POWDER_MISC,     --  70, no subtypes
+        mat_type       = 0,      -- INORGANIC:NONE attempt
+        mat_index      = -1,     -- NONE
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- ----- CONTAINERS (NON-TOOL) -----
+    -- A generic container (any item). Too broad for practical use —
+    -- DF will grab bars, weapons, etc. as "containers." Prefer
+    -- BUCKET or BARREL for liquid reactions.
+    -- Pattern source: MAKE_SOAP_FROM_TALLOW reagents[1] ("lye container")
+    CONTAINER = {
+        item_type      = -1,     -- any item that can contain liquid
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    ANIMALTRAP = {
+        item_type      = df.item_type.ANIMALTRAP,     --  19, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    ARMORSTAND = {
+        item_type      = df.item_type.ARMORSTAND,     --  33, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    BACKPACK = {
+        item_type      = df.item_type.BACKPACK,     --  61, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- An empty bag. Used as a container for powders.
+    BAG = {
+        item_type      = df.item_type.BAG,     --  31, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- A barrel. Alternative liquid container, larger capacity.
+    -- item_type 17 = df.item_type.BARREL
+    BARREL = {
+        item_type      = df.item_type.BARREL,     --  17, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    BOX = {
+        item_type      = df.item_type.BOX,     --  30, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    BIN = {
+        item_type      = df.item_type.BIN,     --  32, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- A bucket. The standard liquid container for workshop reactions.
+    -- item_type 18 = df.item_type.BUCKET
+    BUCKET = {
+        item_type      = df.item_type.BUCKET,     --  18, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    CABINET = {
+        item_type      = df.item_type.CABINET,     --  35, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    CAGE = {
+        item_type      = df.item_type.CAGE,     --  16, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    COFFIN = {
+        item_type      = df.item_type.COFFIN,     --  21, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- A vial or flask. 1800 capacity = 45 dim = 3 vials/unit
+    FLASK = {
+        item_type      = df.item_type.FLASK,     --  11, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    QUIVER = {
+        item_type      = df.item_type.QUIVER,     --  62, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    WEAPONRACK = {
+        item_type      = df.item_type.WEAPONRACK,     --  34, no subtypes
+        mat_type       = -1,     -- no magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- ----- LIQUIDS -----
+    -- A liquid (lye, water, milk, etc.) stored in a container.
+    -- Must be paired with a CONTAINER reagent via contains linkage.
+    -- The liquid reagent gets IN_CONTAINER=true; the container gets
+    -- PRESERVE_REAGENT=true and contains pointing to the liquid.
+    -- Pattern source: MAKE_SOAP_FROM_TALLOW reagents[0] ("lye")
+
+    -- Water specifically. mat_type=6 is the builtin water material.
+    -- Discovered via: dfhack.matinfo.find('WATER') -> <material 6:-1>
+    WATER = {
+        item_type      = df.item_type.LIQUID_MISC,     --  73, no subtypes
+        mat_type       = 6,      -- builtin water material type
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- Generic liquid. mat_type resolved from mat_id if given.
+    -- For non-inorganic liquids (lye=11, milk, etc.) the mat_type
+    -- must be specified directly since they aren't in the inorganic
+    -- array. Currently only supports builtin material types.
+    LIQUID = {
+        item_type      = df.item_type.LIQUID_MISC,     --  73, no subtypes
+        mat_type       = nil,    -- resolved from context
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- Extracts, oils, syrups. Dimensioned and container-bound, so a
+    -- reagent needs in_container plus a matching container reagent.
+    LIQUID_MISC = { 
+        item_type = df.item_type.LIQUID_MISC,         --  73, no subtypes
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- An inorganic liquid: acids, alkalis, solutions. Unlike WATER
+    -- (a builtin material at mat_type 6) these live in the inorganic
+    -- array, so mat_type is 0 and the index is resolved from mat_id.
+    -- Pairs with a BUCKET/BARREL/JUG reagent via contains linkage,
+    -- exactly like WATER does.
+    LIQUID_INORGANIC = {
+        item_type      = df.item_type.LIQUID_MISC,     --  73, no subtypes
+        mat_type       = 0,      -- INORGANIC
+        mat_index      = nil,    -- resolved from mat_id
+        reaction_class = "",
+        needs_mat_id   = true,
         needs_metal_id = false,
     },
 
@@ -392,30 +564,9 @@ REAGENT_TYPES = {
     -- Kept separate from LIQUID_INORGANIC so that type stays strict and
     -- still catches a forgotten mat_id.
     LIQUID_INORGANIC_ANY = {
-        item_type      = 73,     -- df.item_type.LIQUID_MISC
+        item_type      = df.item_type.LIQUID_MISC,     --  73, no subtypes
         mat_type       = 0,      -- INORGANIC
         mat_index      = -1,     -- NONE
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
-    },
-
-    -- Any rough gem, narrowed by reaction_class. Used for his beryl and
-    -- fluorite grinding, where several minerals share a reaction class.
-    ROUGH_ANY = {
-        item_type      = 3,      -- df.item_type.ROUGH
-        mat_type       = 0,      -- INORGANIC
-        mat_index      = -1,     -- NONE
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
-    },
-
-    -- A standard wooden log.
-    WOOD = {
-        item_type      = df.item_type.WOOD,
-        mat_type       = -1,
-        mat_index      = -1,
         reaction_class = "",
         needs_mat_id   = false,
         needs_metal_id = false,
@@ -431,10 +582,152 @@ REAGENT_TYPES = {
     --
     -- item_subtype holds the itemdef CODE, not a number. Tool indices
     -- shift with mod load order, so the reaction builder resolves the
-    -- code at build time — same principle as custom workshops.
+    -- code at build time — same principle as custom workshops. 10,000
+    -- capacity = 66.67 dim = 2.25 units
+
+
+    -- "TOOL": Any tool, named by the reagent rather than by the type. JUG and
+    -- LARGE_POT hardcode their itemdef code because they are
+    -- fixed vanilla tools. This entry is the general case: the reagent
+    -- definition carries tool_id, so any tool including an injected one
+    -- can be required without adding a type entry per tool.
+    --
+    --     { "code": "vessel", "type": "TOOL",
+    --       "tool_id": "MAKING_FUEL_SMALL_CASK", "quantity": 1 }
+    --
+    -- needs_tool_id follows the needs_mat_id pattern: the type declares
+    -- that the value comes from the reagent, and build_reagent reads it.
+    -- Leaving tool_id out resolves to -1, which matches any tool at all.
+    --
+    -- This is what makes tools generally useful in reactions rather
+    -- than only as containers: a reaction can demand a specific tool be
+    -- present instead of needing a whole new workshop to gate on.
+    TOOL = {
+        item_type      = df.item_type.TOOL,        --  86
+        mat_type       = -1,        -- no magnifying glass?
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+        needs_tool_id  = true,
+    },
+
+
+    -- ----- SUBTYPE-SPECIFIC TOOLS -----
+
+    CAULDRON = {
+        item_type      = df.item_type.TOOL,                  --  86
+        item_subtype   = "ITEM_TOOL_CAULDRON",                   -- 0
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    LADLE = {
+        item_type      = df.item_type.TOOL,                  --  86
+        item_subtype   = "ITEM_TOOL_LADLE",                   -- 1
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    BOWL = {
+        item_type      = df.item_type.TOOL,                  --  86
+        item_subtype   = "ITEM_TOOL_BOWL",                   -- 2
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    MORTAR = {
+        item_type      = df.item_type.TOOL,                  --  86
+        item_subtype   = "ITEM_TOOL_MORTAR",                   -- 3
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    PESTLE = {
+        item_type      = df.item_type.TOOL,                  --  86
+        item_subtype   = "ITEM_TOOL_PESTLE",                   -- 4
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    KNIFE_CARVING = {
+        item_type      = df.item_type.TOOL,                  --  86
+        item_subtype   = "ITEM_TOOL_KNIFE_CARVING",                   -- 5
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    KNIFE_BONING = {
+        item_type      = df.item_type.TOOL,                  --  86
+        item_subtype   = "ITEM_TOOL_KNIFE_BONING",                   -- 6
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    KNIFE_SLICING = {
+        item_type      = df.item_type.TOOL,                  --  86
+        item_subtype   = "ITEM_TOOL_KNIFE_SLICING",                   -- 7
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    KNIFE_MEAT_CLEAVER = {
+        item_type      = df.item_type.TOOL,                  --  86
+        item_subtype   = "ITEM_TOOL_MEAT_CLEAVER",                   -- 8
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    FORK_CARVING = {
+        item_type      = df.item_type.TOOL,                  --  86
+        item_subtype   = "ITEM_TOOL_FORK_CARVING",                   -- 9
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    NEST_BOX = {
+        item_type      = df.item_type.TOOL,                  --  86
+        item_subtype   = "ITEM_TOOL_NEST_BOX",                   -- 10
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
     JUG = {
-        item_type      = df.item_type.TOOL,   -- 86
-        item_subtype   = "ITEM_TOOL_JUG",     -- resolved at build time
+        item_type      = df.item_type.TOOL,                  --  86
+        item_subtype   = "ITEM_TOOL_JUG",                  -- 11
         mat_type       = -1,
         mat_index      = -1,
         reaction_class = "",
@@ -444,10 +737,514 @@ REAGENT_TYPES = {
 
     -- A large pot. Same tool-itemdef pattern as JUG above: the subtype
     -- is a CODE, resolved at build time because tool indices shift with
-    -- mod load order.
+    -- mod load order. 60,000 capacity = 1500 dim = 10 units
     LARGE_POT = {
-        item_type      = df.item_type.TOOL,
-        item_subtype   = "ITEM_TOOL_LARGE_POT",
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_LARGE_POT",                    -- 12
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HIVE = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_HIVE",                    -- 13
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HONEYCOMB = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_HONEYCOMB",                    -- 14
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    POUCH = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_POUCH",                    -- 15
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    MINECART = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_MINECART",                    -- 16
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    WHEELBARROW = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_WHEELBARROW",                    -- 17
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    STEPLADDER = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_STEPLADDER",                    -- 18
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    SCROLL_ROLLERS = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_SCROLL_ROLLERS",                    -- 19
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    BOOK_BINDING = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_BOOK_BINDING",                    -- 20
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    SCROLL = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_SCROLL",                    -- 21
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    QUIRE = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_QUIRE",                    -- 22
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    BOOKCASE = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_BOOKCASE",                    -- 23
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HELVE = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_HELVE",                    -- 24
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    STONE_AXE = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_STONE_AXE",                    -- 25
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    PEDESTAL = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_PEDESTAL",                    -- 26
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    DISPLAY_CASE = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_DISPLAY_CASE",                    -- 27
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    ALTAR = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_ALTAR",                    -- 28
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    DIE = {
+        item_type      = df.item_type.TOOL,                    --  86
+        item_subtype   = "ITEM_TOOL_DIE",                    -- 29
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- ---- TOOL USES -----
+
+    --LIQUID_COOKING = 0
+    --LIQUID_SCOOP = 1
+    --GRIND_POWDER_RECEPTACLE = 2
+    --GRIND_POWDER_GRINDER = 3
+    --MEAT_CARVING = 4
+    --MEAT_BONING = 5
+    --MEAT_SLICING = 6
+    --MEAT_CLEAVING = 7
+    --HOLD_MEAT_FOR_CARVING = 8
+    --MEAL_CONTAINER = 9
+    --LIQUID_CONTAINER = 10
+    --FOOD_STORAGE = 11
+    --HIVE = 12
+    --NEST_BOX = 13
+    --SMALL_OBJECT_STORAGE = 14
+    --TRACK_CART = 15
+    --HEAVY_OBJECT_HAULING = 16
+    --STAND_AND_WORK_ABOVE = 17
+    --ROLL_UP_SHEET = 18
+    --PROTECT_FOLDED_SHEETS = 19
+    --CONTAIN_WRITING = 20
+    --BOOKCASE = 21
+    --DISPLAY_OBJECT = 22
+    --PLACE_OFFERING = 23
+    --DIVINATION = 24
+    --GAMES_OF_CHANCE = 25
+
+    HAS_LIQUID_COOKING = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.LIQUID_COOKING,                   -- 0
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_LIQUID_SCOOP = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.LIQUID_SCOOP,                   -- 1
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_GRIND_POWDER_RECEPTACLE = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.GRIND_POWDER_RECEPTACLE,                   -- 2
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_MEAT_CARVING = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.MEAT_CARVING,                   -- 4
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_MEAT_BONING = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.MEAT_BONING,                   -- 5
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_MEAT_SLICING = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.MEAT_SLICING,                   -- 6
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_MEAT_CLEAVING = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.MEAT_CLEAVING,                   -- 7
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_HOLD_MEAT_FOR_CARVING = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.HOLD_MEAT_FOR_CARVING,                   -- 8
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_MEAL_CONTAINER = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.MEAL_CONTAINER,                   -- 9
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_LIQUID_CONTAINER = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.LIQUID_CONTAINER,                  -- 10
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_FOOD_STORAGE = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.FOOD_STORAGE,                  -- 11
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_HIVE = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.HIVE,                  -- 12
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_NEST_BOX = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.NEST_BOX,                  -- 13
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_SMALL_OBJECT_STORAGE = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.SMALL_OBJECT_STORAGE,                  -- 14
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_TRACK_CART = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.TRACK_CART,                  -- 15
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_HEAVY_OBJECT_HAULING = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.HEAVY_OBJECT_HAULING,                  -- 16
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_STAND_AND_WORK_ABOVE = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.STAND_AND_WORK_ABOVE,                  -- 17
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_ROLL_UP_SHEET = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.ROLL_UP_SHEET,                  -- 18
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_PROTECT_FOLDED_SHEETS = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.PROTECT_FOLDED_SHEETS,                  -- 19
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_CONTAIN_WRITING = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.CONTAIN_WRITING,                  -- 20
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_BOOKCASE = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.BOOKCASE,                  -- 21
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_DISPLAY_OBJECT = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.DISPLAY_OBJECT,                  -- 22
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_PLACE_OFFERING = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.PLACE_OFFERING,                  -- 23
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_DIVINATION = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.DIVINATION,                  -- 24
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HAS_GAMES_OF_CHANCE = {
+        item_type      = df.item_type.TOOL,                  --  86
+        has_tool_use   = df.tool_uses.GAMES_OF_CHANCE,                  -- 25
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- ----- FURNITURE & ARCHITECHTURE -----
+    DOOR = {
+        item_type      = df.item_type.DOOR,     --  6, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    FLOODGATE = {
+        item_type      = df.item_type.FLOODGATE,     --  7, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    BED = {
+        item_type      = df.item_type.BED,     --  8, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    CHAIR = {
+        item_type      = df.item_type.CHAIR,     --  9, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    WINDOW = {
+        item_type      = df.item_type.WINDOW,     --  15, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    TABLE = {
+        item_type      = df.item_type.TABLE,     --  20, no subtypes
         mat_type       = -1,
         mat_index      = -1,
         reaction_class = "",
@@ -457,7 +1254,7 @@ REAGENT_TYPES = {
 
     -- A statue. No subtype: STATUE is a plain item type.
     STATUE = {
-        item_type      = df.item_type.STATUE,
+        item_type      = df.item_type.STATUE,    --  22, no subtypes
         mat_type       = -1,
         mat_index      = -1,
         reaction_class = "",
@@ -465,6 +1262,44 @@ REAGENT_TYPES = {
         needs_metal_id = false,
     },
 
+    PIPE_SECTION = {
+        item_type      = df.item_type.PIPE_SECTION,     --  77, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    HATCH_COVER = {
+        item_type      = df.item_type.HATCH_COVER,     --  78, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    GRATE = {
+        item_type      = df.item_type.GRATE,     --  79, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    SLAB = {
+        item_type      = df.item_type.SLAB,     --  87, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+
+    -- ----- FINISHED GOODS & CRAFTS -----
     -- Any craft item. Verified against GLAZE_CRAFT_ASH: DF stores this
     -- as item_type -1 with flags3.any_craft set, so the flag does all
     -- the filtering and the item type matches anything.
@@ -476,7 +1311,7 @@ REAGENT_TYPES = {
     -- flags3 is applied by build_reagent after the neutral reset. It is
     -- a type-level property, not a modder choice, which is why it lives
     -- here rather than in the schema's flags block.
-    ANY_CRAFT = {
+    CRAFT_ANY = {
         item_type      = -1,
         mat_type       = -1,
         mat_index      = -1,
@@ -486,20 +1321,1150 @@ REAGENT_TYPES = {
         flags3         = { any_craft = true },
     },
 
-    -- ----- CREATURE MATERIALS -----
-    -- An untyped reagent slot filtered entirely by flags rather than by
-    -- item type — bones, shells, horns. item_type -1 matches anything,
-    -- so this type is ONLY safe when paired with body_part plus one of
-    -- the bone/shell/horn flags. Used by CALCINE_BONES, GRIND_SHELLS
-    -- and the two hartshorn reactions.
-    BODY_PART = {
-        item_type      = -1,     -- any item; the flags do the filtering
+    GOBLET = {
+        item_type      = df.item_type.GOBLET,     --  12, no subtypes
         mat_type       = -1,
         mat_index      = -1,
         reaction_class = "",
         needs_mat_id   = false,
         needs_metal_id = false,
     },
+
+    -- remember to catalogue instrument parts later
+    -- instruments have subtypes but they're weird
+    INSTRUMENT = {
+        item_type      = df.item_type.INSTRUMENT,     --  13
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+
+    -- ----- TOYS -----
+    -- any toy
+    TOY = {
+        item_type      = df.item_type.TOY,     --  14
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    TOY_PUZZLEBOX = {
+        item_type      = df.item_type.TOY,     --  14
+        item_subtype   = 0,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    TOY_BOAT = {
+        item_type      = df.item_type.TOY,     --  14
+        item_subtype   = 1,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    TOY_HAMMER = {
+        item_type      = df.item_type.TOY,     --  14
+        item_subtype   = 2,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    TOY_AXE = {
+        item_type      = df.item_type.TOY,     --  14
+        item_subtype   = 3,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    TOY_MINIFORGE = {
+        item_type      = df.item_type.TOY,     --  14
+        item_subtype   = 4,
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+
+    FIGURINE = {
+        item_type      = df.item_type.FIGURINE,     --  36, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    AMULET = {
+        item_type      = df.item_type.AMULET,     --  37, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    SCEPTER = {
+        item_type      = df.item_type.SCEPTER,     --  38, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    CROWN = {
+        item_type      = df.item_type.CROWN,     --  40, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    RING = {
+        item_type      = df.item_type.RING,     --  41, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    EARRING = {
+        item_type      = df.item_type.EARRING,     --  42, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    BRACELET = {
+        item_type      = df.item_type.BRACELET,     --  43, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- A skull mounted as a totem. Item type 59, no longer a corpse
+    -- piece, so no body_part reagent will reach one.
+    TOTEM = { 
+        item_type = df.item_type.TOTEM,         --  59, no subtypes       
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    COIN = { 
+        item_type = df.item_type.COIN,         --  74, no subtypes    
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- WEAPONS -----
+    WEAPON = { 
+        item_type = df.item_type.WEAPON,         --  24
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    WHIP = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_WHIP",        -- 0
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    AXE_BATTLE = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_AXE_BATTLE", -- 1
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    HAMMER_WAR = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_HAMMER_WAR", -- 2
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SWORD_SHORT = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_SWORD_SHORT", -- 3
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SPEAR = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_SPEAR", -- 4
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    MACE = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_MACE", -- 5
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    CROSSBOW = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_CROSSBOW", -- 6
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    PICK = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_PICK", -- 7
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    BOW = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_BOW", -- 8
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    BLOWGUN = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_BLOWGUN", -- 9
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    PIKE = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_PIKE", -- 10
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    HALBERD = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_HALBERD", -- 11
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- two handed sword
+    SWORD_2H = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_SWORD_2H", -- 12
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SWORD_LONG = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_SWORD_LONG", -- 13
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    MAUL = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_MAUL", -- 14
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    AXE_GREAT = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_AXE_GREAT", -- 15
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    DAGGER_LARGE = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_DAGGER_LARGE", -- 16
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SCOURGE = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_SCOURGE", -- 17
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    FLAIL = { 
+        item_type = df.item_type.WEAPON,         --  18
+        item_subtype = "ITEM_WEAPON_FLAIL", -- 4
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    MORNINGSTAR = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_MORNINGSTAR", -- 19
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SCIMITAR = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_SCIMITAR", -- 20
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    AXE_TRAINING = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_AXE_TRAINING", -- 21
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SWORD_SHORT_TRAINING = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_SWORD_SHORT_TRAINING", -- 22
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SPEAR_TRAINING = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_SPEAR_TRAINING", -- 23
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    PICK_GREAT = { 
+        item_type = df.item_type.WEAPON,         --  24
+        item_subtype = "ITEM_WEAPON_PICK_GREAT", -- 24
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- ARMOUR -----
+    -- should match any torso armour
+    ARMOR = { 
+        item_type = df.item_type.ARMOR,         --  25
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    BREASTPLATE = { 
+        item_type = df.item_type.ARMOR,         --  25
+        item_subtype = "ITEM_ARMOR_BREASTPLATE", -- 0
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    MAIL_SHIRT = { 
+        item_type = df.item_type.ARMOR,         --  25
+        item_subtype = "ITEM_ARMOR_MAIL_SHIRT", -- 1
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    LEATHER_ARMOR = { 
+        item_type = df.item_type.ARMOR,         --  25
+        item_subtype = "ITEM_ARMOR_LEATHER_ARMOR", -- 2
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    COAT = { 
+        item_type = df.item_type.ARMOR,         --  25
+        item_subtype = "ITEM_ARMOR_COAT", -- 3
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SHIRT = { 
+        item_type = df.item_type.ARMOR,         --  25
+        item_subtype = "ITEM_ARMOR_SHIRT", -- 4
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    CLOAK = { 
+        item_type = df.item_type.ARMOR,         --  25
+        item_subtype = "ITEM_ARMOR_CLOAK", -- 5
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    TUNIC = { 
+        item_type = df.item_type.ARMOR,         --  25
+        item_subtype = "ITEM_ARMOR_TUNIC", -- 6
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    TOGA = { 
+        item_type = df.item_type.ARMOR,         --  25
+        item_subtype = "ITEM_ARMOR_TOGA", -- 7
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    CAPE = { 
+        item_type = df.item_type.ARMOR,         --  25
+        item_subtype = "ITEM_ARMOR_CAPE", -- 8
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    VEST = { 
+        item_type = df.item_type.ARMOR,         --  25
+        item_subtype = "ITEM_ARMOR_VEST", -- 9
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    DRESS = { 
+        item_type = df.item_type.ARMOR,         --  25
+        item_subtype = "ITEM_ARMOR_DRESS", -- 10
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    ROBE = { 
+        item_type = df.item_type.ARMOR,         --  25
+        item_subtype = "ITEM_ARMOR_ROBE", -- 11
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- SHIELDS -----
+    -- matches any shield including bucklers
+    SHIELD_ANY = { 
+        item_type = df.item_type.SHIELD,         --  27
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- shield subtype only, no bucklers
+    SHIELD = { 
+        item_type = df.item_type.SHIELD,         --  27
+        item_subtype = "ITEM_SHIELD_SHIELD",     -- 0     
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SHIELD_BUCKLER = { 
+        item_type = df.item_type.SHIELD,         --  27
+        item_subtype = "ITEM_SHIELD_BUCKLER",    -- 1       
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- AMMO -----
+    -- any ammo
+    AMMO = { 
+        item_type = df.item_type.AMMO,         --  39
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    BOLTS = { 
+        item_type = df.item_type.AMMO,         --  39
+        item_subtype = "ITEM_AMMO_BOLTS",      -- 0      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    ARROWS = { 
+        item_type = df.item_type.AMMO,         --  39
+        item_subtype = "ITEM_AMMO_ARROWS",     -- 1      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    BLOWDARTS = { 
+        item_type = df.item_type.AMMO,         --  39
+        item_subtype = "ITEM_AMMO_BLOWDARTS",  -- 2      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- FOOTWEAR -----
+    -- any footwear
+    FOOTWEAR_ANY = { 
+        item_type = df.item_type.SHOES,         --  26
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- shoe subtype only
+    SHOES = { 
+        item_type = df.item_type.SHOES,         --  26
+        item_subtype = 0,      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- high boots
+    BOOTS = { 
+        item_type = df.item_type.SHOES,         --  26
+        item_subtype = "ITEM_SHOES_BOOTS", -- 1      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    BOOTS_LOW = { 
+        item_type = df.item_type.SHOES,         --  26
+        item_subtype = "ITEM_SHOES_BOOTS_LOW", -- 2      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SANDAL = { 
+        item_type = df.item_type.SHOES,         --  26
+        item_subtype = "ITEM_SHOES_SANDAL", -- 3      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    CHAUSSE = { 
+        item_type = df.item_type.SHOES,         --  26
+        item_subtype = "ITEM_SHOES_CHAUSSE", -- 4      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SOCKS = { 
+        item_type = df.item_type.SHOES,         --  26
+        item_subtype = "ITEM_SHOES_SOCKS", -- 5      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- HEADWEAR -----
+    -- match any headwear
+    HEADWARE_ANY = { 
+        item_type = df.item_type.HELM,         --  28
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false
+    },
+
+    -- helm subtype only
+    HELM = { 
+        item_type = df.item_type.HELM,         --  28
+        item_subtype = "ITEM_HELM_HELM", -- 0      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    CAP = { 
+        item_type = df.item_type.HELM,         --  28
+        item_subtype = "ITEM_HELM_CAP", -- 1      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    HOOD = { 
+        item_type = df.item_type.HELM,         --  28
+        item_subtype = "ITEM_HELM_HOOD", -- 2      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    TURBAN = { 
+        item_type = df.item_type.HELM,         --  28
+        item_subtype = "ITEM_HELM_TURBAN", -- 3      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    MASK = { 
+        item_type = df.item_type.HELM,         --  28
+        item_subtype = "ITEM_HELM_MASK", -- 4      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    VEIL_HEAD = { 
+        item_type = df.item_type.HELM,         --  28
+        item_subtype = "ITEM_HELM_VEIL_HEAD", -- 5      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    VEIL_FACE = { 
+        item_type = df.item_type.HELM,         --  28
+        item_subtype = "ITEM_HELM_VEIL_FACE", -- 6      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SCARF_HEAD = { 
+        item_type = df.item_type.HELM,         --  28
+        item_subtype = "ITEM_HELM_SCARF_HEAD", -- 7      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- HANDWEAR -----
+    -- match any handwear
+    HANDWEAR_ANY = { 
+        item_type = df.item_type.GLOVES,         --  29
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    GAUNTLETS = { 
+        item_type = df.item_type.GLOVES,         --  29
+        item_subtype = "ITEM_GLOVES_GAUNTLETS", -- 0      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- glove subtype only
+    GLOVES = { 
+        item_type = df.item_type.GLOVES,         --  29
+        item_subtype = "ITEM_GLOVES_GLOVES", -- 1      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    MITTENS = { 
+        item_type = df.item_type.GLOVES,         --  29
+        item_subtype = "ITEM_GLOVES_MITTENS", -- 2      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- LEGWEAR -----
+    LEGWEAR_ANY = { 
+        item_type = df.item_type.PANTS,         --  60
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- pants subtype only
+    PANTS = { 
+        item_type = df.item_type.PANTS,         --  60
+        item_subtype = 0,   
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    GREAVES = { 
+        item_type = df.item_type.PANTS,         --  60
+        item_subtype = "ITEM_PANTS_GREAVES", -- 1   
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    LEGGINGS = { 
+        item_type = df.item_type.PANTS,         --  60
+        item_subtype = "ITEM_PANTS_LEGGINGS", -- 2   
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    LOINCLOTH = { 
+        item_type = df.item_type.PANTS,         --  60
+        item_subtype = "ITEM_PANTS_LOINCLOTH", -- 3   
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    THONG = { 
+        item_type = df.item_type.PANTS,         --  60
+        item_subtype = "ITEM_PANTS_THONG", -- 4   
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SKIRT = { 
+        item_type = df.item_type.PANTS,         --  60
+        item_subtype = "ITEM_PANTS_SKIRT", -- 5   
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SKIRT_SHORT = { 
+        item_type = df.item_type.PANTS,         --  60
+        item_subtype = "ITEM_PANTS_SKIRT_SHORT", -- 6   
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SKIRT_LONG = { 
+        item_type = df.item_type.PANTS,         --  60
+        item_subtype = "ITEM_PANTS_SKIRT_LONG", -- 7   
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    BRAIES = { 
+        item_type = df.item_type.PANTS,         --  60
+        item_subtype = "ITEM_PANTS_BRAIES", -- 8   
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- WORKSHOP & LOCATION OBJECTS -----
+    QUERN = { 
+        item_type = df.item_type.QUERN,         --  80, no subtypes     
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    MILLSTONE = { 
+        item_type = df.item_type.MILLSTONE,         --  81, no subtypes       
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    ANVIL = { 
+        item_type = df.item_type.ANVIL,         --  45, no subtypes      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    TRACTION_BENCH = { 
+        item_type = df.item_type.TRACTION_BENCH,         --  84, no subtypes       
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    ORTHOPEDIC_CAST = { 
+        item_type = df.item_type.ORTHOPEDIC_CAST,         --  85, no subtypes     
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SPLINT = { 
+        item_type = df.item_type.SPLINT,         --  82, no subtypes     
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    CRUTCH = { 
+        item_type = df.item_type.CRUTCH,         --  83, no subtypes       
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- SIEGES & TRAPS -----
+    CATAPULTPARTS = { 
+        item_type = df.item_type.CATAPULTPARTS,         --  63, no subtypes      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    BALLISTAPARTS = { 
+        item_type = df.item_type.BALLISTAPARTS,         --  64, no subtypes      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- SIEGE AMMUNITION -----
+    SIEGEAMMO = { 
+        item_type = df.item_type.SIEGEAMMO,         --  65
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SIEGEAMMO_BALLISTA = { 
+        item_type = df.item_type.SIEGEAMMO,         --  65
+        item_subtype = "ITEM_SIEGEAMMO_BALLISTA",   -- 0
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    BALLISTAARROWHEAD = { 
+        item_type = df.item_type.BALLISTAARROWHEAD,         --  66, no subtypes       
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    BOLT_THROWER_PARTS = { 
+        item_type = df.item_type.BOLT_THROWER_PARTS,         --  92, no subtypes        
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    TRAPPARTS = { 
+        item_type = df.item_type.TRAPPARTS,         --  67, no subtypes      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- TRAP COMPONENTS -----
+    TRAPCOMP = { 
+        item_type = df.item_type.TRAPCOMP,         --  68
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    GIANTAXEBLADE = { 
+        item_type = df.item_type.TRAPCOMP,         --  68
+        item_subtype = "ITEM_TRAPCOMP_GIANTAXEBLADE", -- 0   
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    ENORMOUSCORKSCREW = { 
+        item_type = df.item_type.TRAPCOMP,         --  68
+        item_subtype = "ITEM_TRAPCOMP_ENORMOUSCORKSCREW", -- 1   
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    SPIKEDBALL = { 
+        item_type = df.item_type.TRAPCOMP,         --  68
+        item_subtype = "ITEM_TRAPCOMP_SPIKEDBALL", -- 2   
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    LARGESERRATEDDISC = { 
+        item_type = df.item_type.TRAPCOMP,         --  68
+        item_subtype = "ITEM_TRAPCOMP_LARGESERRATEDDISC", -- 3   
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    MENACINGSPIKE = { 
+        item_type = df.item_type.TRAPCOMP,         --  68
+        item_subtype = "ITEM_TRAPCOMP_MENACINGSPIKE", -- 4   
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- ORGANIC INTAKE -----
+    -- All of these wildcard the material deliberately. Organic mat_type
+    -- is computed per species (plant = 419 + that plant's own local
+    -- material index, creature = 19 + its own), and those local indices
+    -- are NOT stable across species. Olive proves it: its local material
+    -- 1 is frozen olive oil where nearly every other tree has wood, so a
+    -- fixed mat_type of 420 would quietly accept oil in a wood reaction.
+    --
+    -- Filtering therefore happens entirely through flags in the JSON.
+    -- Vanilla does the same: the gukil strings reagent is THREAD at
+    -- mat -1/-1 carrying nothing but ANY_PLANT_MATERIAL.
+    --
+    -- Named rather than numbered: an off by one in the item enum
+    -- silently swaps the item kind.
+
 
     -- ----- ORGANIC INTAKE -----
     -- Item types a reaction can consume organic matter through.
@@ -525,8 +2490,10 @@ REAGENT_TYPES = {
     -- item in the fortress, including furniture, bars and artifacts.
     -- Use it for cross-cutting filters that no single item type can
     -- express, such as furniture combined with a wood material.
-    ANY_ITEM = {
-        item_type      = -1,
+
+    -- ----- PETS & RESTRAINTS -----
+    PET = {
+        item_type      = df.item_type.PET,    --  52, no subtypes
         mat_type       = -1,
         mat_index      = -1,
         reaction_class = "",
@@ -534,28 +2501,26 @@ REAGENT_TYPES = {
         needs_metal_id = false,
     },
 
-    -- A harvested plant, the thing a farm plot yields.
-    PLANT = {
-        item_type      = df.item_type.PLANT,
-        mat_type       = -1,
-        mat_index      = -1,
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
+    CHAIN = { 
+        item_type = df.item_type.CHAIN,         --  10, no subtypes
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
     },
 
-    -- Leaves, fruit, nuts. Anything a plant grows rather than is.
-    PLANT_GROWTH = {
-        item_type      = df.item_type.PLANT_GROWTH,
-        mat_type       = -1,
-        mat_index      = -1,
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
-    },
+    -- ----- RAW CREATURE MATERIALS -----
+    -- An untyped reagent slot filtered entirely by flags rather than by
+    -- item type — bones, shells, horns. item_type -1 matches anything,
+    -- so this type is ONLY safe when paired with body_part plus one of
+    -- the bone/shell/horn flags. Used by CALCINE_BONES, GRIND_SHELLS
+    -- and the two hartshorn reactions.
 
-    SEEDS = {
-        item_type      = df.item_type.SEEDS,
+    -- any body part
+    -- found corpse flags in body parts data, look into that later
+    BODY_PART = {
+        item_type      = -1,     -- any item; the flags do the filtering
         mat_type       = -1,
         mat_index      = -1,
         reaction_class = "",
@@ -565,7 +2530,7 @@ REAGENT_TYPES = {
 
     -- A whole body. Distinct from CORPSEPIECE, which is a part.
     CORPSE = {
-        item_type      = df.item_type.CORPSE,
+        item_type      = df.item_type.CORPSE,    --  23, no subtypes
         mat_type       = -1,
         mat_index      = -1,
         reaction_class = "",
@@ -577,7 +2542,7 @@ REAGENT_TYPES = {
     -- same items through flags at item_type -1; this one pins the type
     -- instead, which is safer where no other filter is wanted.
     CORPSEPIECE = {
-        item_type      = df.item_type.CORPSEPIECE,
+        item_type      = df.item_type.CORPSEPIECE,    --  46, no subtypes
         mat_type       = -1,
         mat_index      = -1,
         reaction_class = "",
@@ -585,9 +2550,129 @@ REAGENT_TYPES = {
         needs_metal_id = false,
     },
 
+    -- Vermin remains. Its own stockpile category, so its own type.
+    REMAINS = { 
+        item_type = df.item_type.REMAINS,         --  47, no subtypes  
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- ----- FOOD -----
+    -- Prepared meals and raw food. FOOD is 72, DRINK is 69.
+    FOOD = { 
+        item_type = df.item_type.FOOD,         --  72, no subtypes      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    DRINK = { 
+        item_type = df.item_type.DRINK,         --  69, no subtypes       
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false
+    },
+
+    MEAT = { 
+        item_type = df.item_type.MEAT,         --  48, no subtypes      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    EGG = { 
+        item_type = df.item_type.EGG,         --  88, no subtypes        
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    CHEESE = { 
+        item_type = df.item_type.CHEESE,         --  71, no subtypes      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- Prepared fish, distinct from FISH_RAW.
+    FISH = { 
+        item_type = df.item_type.FISH,         --  49, no subtypes      
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    FISH_RAW = { 
+        item_type = df.item_type.FISH_RAW,         --  50, no subtypes 
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
+    },
+
+    -- Fat and tallow. Dimensioned, so quantity counts units, not items.
+    GLOB = {
+        item_type      = df.item_type.GLOB,    --  75, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+
+    -- ----- PLANTS -----
+    -- A harvested plant, the thing a farm plot yields.
+    PLANT = {
+        item_type      = df.item_type.PLANT,    --  54, no subtypes
+        mat_type       = -1,    -- gets glitched magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    -- Leaves, fruit, nuts. Anything a plant grows rather than is.
+    PLANT_GROWTH = {
+        item_type      = df.item_type.PLANT_GROWTH,    --  56, no subtypes
+        mat_type       = -1,    -- gets glitched magnifying glass
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+    SEEDS = {
+        item_type      = df.item_type.SEEDS,    --  53, no subtypes
+        mat_type       = -1,
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
+
+    -- ----- PROCESSED PLANT & ANIMAL MATERIALS -----
+
     -- Tanned leather, not the raw hide. Raw hides are CORPSEPIECE.
     SKIN_TANNED = {
-        item_type      = df.item_type.SKIN_TANNED,
+        item_type      = df.item_type.SKIN_TANNED,    --  55, no subtypes
         mat_type       = -1,
         mat_index      = -1,
         reaction_class = "",
@@ -598,7 +2683,7 @@ REAGENT_TYPES = {
     -- Spun thread. Plant, silk and yarn all arrive as this item type,
     -- separated by flags2.plant, flags2.silk and flags2.yarn.
     THREAD = {
-        item_type      = df.item_type.THREAD,
+        item_type      = df.item_type.THREAD,    --  57, no subtypes
         mat_type       = -1,
         mat_index      = -1,
         reaction_class = "",
@@ -607,7 +2692,7 @@ REAGENT_TYPES = {
     },
 
     CLOTH = {
-        item_type      = df.item_type.CLOTH,
+        item_type      = df.item_type.CLOTH,    --  58, no subtypes
         mat_type       = -1,
         mat_index      = -1,
         reaction_class = "",
@@ -615,46 +2700,24 @@ REAGENT_TYPES = {
         needs_metal_id = false,
     },
 
-    -- Fat and tallow. Dimensioned, so quantity counts units, not items.
-    GLOB = {
-        item_type      = df.item_type.GLOB,
-        mat_type       = -1,
-        mat_index      = -1,
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
+    -- Paper. SHEET is 90, BOOK is 89. Both carry flags3.written_on,
+    -- which is how a reaction avoids consuming a written work.
+    SHEET = { 
+        item_type = df.item_type.SHEET,         --  90, no subtypes
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
     },
 
-    -- ----- RAW / ROUGH -----
-    -- A rough gemstone or uncut glass piece
-    ROUGH = {
-        item_type      = 3,      -- df.item_type.ROUGH
-        mat_type       = 0,      -- INORGANIC
-        mat_index      = nil,    -- resolved from mat_id
-        reaction_class = "",
-        needs_mat_id   = true,
-        needs_metal_id = false,
-    },
-
-    -- ----- BLOCKS -----
-    BLOCKS = {
-        item_type      = 2,      -- df.item_type.BLOCKS
-        mat_type       = 0,      -- INORGANIC
-        mat_index      = nil,    -- resolved from mat_id
-        reaction_class = "",
-        needs_mat_id   = true,
-        needs_metal_id = false,
-    },
-
-    -- ----- ROCKS -----
-    -- A rock item (knapping, sharp rocks)
-    ROCK = {
-        item_type      = 76,     -- df.item_type.ROCK
-        mat_type       = -1,
-        mat_index      = -1,
-        reaction_class = "",
-        needs_mat_id   = false,
-        needs_metal_id = false,
+    BOOK = { 
+        item_type = df.item_type.BOOK,         --  89, no subtypes
+        mat_type = -1, 
+        mat_index = -1, 
+        reaction_class = "", 
+        needs_mat_id = false, 
+        needs_metal_id = false 
     },
 }
 
@@ -672,7 +2735,7 @@ PRODUCT_TYPES = {
     BAR         = { item_type = 0,  mat_type = 0  },  -- INORGANIC bar
     -- BAR_COAL carries mat_subtypes. See the builtin bars note below.
     BAR_COAL    = { item_type = 0,  mat_type = df.builtin_mats.COAL,
-                    mat_subtypes = { COKE = 0, CHARCOAL = 1, COAL = -1, TEST_A = 2, TEST_B = 3} },
+                    mat_subtypes = { COKE = 0, CHARCOAL = 1, COAL = -1 } },
     BLOCKS      = { item_type = 2,  mat_type = 0  },  -- Stone/ceramic blocks
     ROUGH       = { item_type = 3,  mat_type = 0  },  -- Raw gem / uncut glass
     BOULDER     = { item_type = 4,  mat_type = 0  },  -- Boulder
@@ -713,6 +2776,23 @@ PRODUCT_TYPES = {
     -- one in the builtin table silently swaps the material.
     BAR_ASH      = { item_type = 0, mat_type = df.builtin_mats.ASH,      builtin = true },
     BAR_PEARLASH = { item_type = 0, mat_type = df.builtin_mats.PEARLASH, builtin = true },
+
+    -- A tool. The subtype names which one, as an itemdef CODE, and
+    -- build_product resolves it at build time through
+    -- resolve_item_subtype. That resolution is by code rather than by
+    -- position, so an injected tool works here with no further change.
+    --
+    -- mat_type 0 is the inorganic default, used when the product names
+    -- a mat_id directly. A tool made from clay wants mode 3 instead:
+    -- get_material_product pointing at the clay reagent and FIRED_MAT,
+    -- which is exactly how vanilla builds a large pot
+    -- (reaction_other.txt:125). A wooden cask wants mode 2,
+    -- get_material_same against the log.
+    --
+    -- Without this entry the engine can consume a tool as a reagent
+    -- but can never produce one, which is why containers had nowhere
+    -- to come from.
+    TOOL = { item_type = df.item_type.TOOL, mat_type = 0 },
 
     -- A random craft item. Verified against MAKE_EARTHENWARE_TYPE_CRAFTS:
     -- DF stores this as item_type -1 with the CRAFTS product flag set,
@@ -841,6 +2921,13 @@ BUILDING_TYPES = {
         custom_code = "SOAP_MAKER",
     },
 
+    SCREW_PRESS = {
+        type        = { 13 },
+        subtype     = { 23 },
+        custom      = { -1 },
+        custom_code = "SCREW_PRESS",
+    },
+
     -- ArgMOD's Chemist (building_arg_chemist.txt). Stays in raws —
     -- we only need to find it, never to create it.
     CHEMIST = {
@@ -859,6 +2946,20 @@ BUILDING_TYPES = {
         subtype     = { 23 },
         custom      = { -1 },
         custom_code = "COMPOUNDER",
+    },
+
+    RETORT = {
+        type        = { 13 },
+        subtype     = { 23 },
+        custom      = { -1 },
+        custom_code = "MAKING_FUEL_RETORT",
+    },
+
+    ARC_FURNACE = {
+        type        = { 13 },
+        subtype     = { 23 },
+        custom      = { -1 },
+        custom_code = "MAKING_FUEL_ARC_FURNACE",
     },
 
     -- No building (adventure mode reactions)
@@ -1005,11 +3106,14 @@ BUILDING_CAPABILITY_GATES = {
     -- MOUNTAIN only. That list is authoritative; second-guessing it
     -- would change his work. Tighten these later if a module ever
     -- needs AUTO mode on these workshops.
-    MILL       = { gate_type = "none", jobs = {} },
-    ASHERY     = { gate_type = "none", jobs = {} },
-    SOAP_MAKER = { gate_type = "none", jobs = {} },
-    CHEMIST    = { gate_type = "none", jobs = {} },
-    COMPOUNDER = { gate_type = "none", jobs = {} },
+    MILL        = { gate_type = "none", jobs = {} },
+    ASHERY      = { gate_type = "none", jobs = {} },
+    SOAP_MAKER  = { gate_type = "none", jobs = {} },
+    SCREW_PRESS  = { gate_type = "none", jobs = {} },
+    CHEMIST     = { gate_type = "none", jobs = {} },
+    COMPOUNDER  = { gate_type = "none", jobs = {} },
+    RETORT      = { gate_type = "none", jobs = {} },
+    ARC_FURNACE = { gate_type = "none", jobs = {} },
     
 
     -- No building: no capability gate (adventure mode, always passes)
@@ -1036,6 +3140,7 @@ SKILL_MAP = {
     SMELT           = 24,   -- Furnace Operating (smelter reactions)
     GLASSMAKER      = 34,   -- Glassmaking
     POTTERY         = 109,  -- Pottery (kiln reactions)
+    CHEMISTRY       = 127,  -- Chemistry (retort, chemist, etc)
 
     -- Workshop skills: stone/masonry
     MASONRY         = 4,    -- Masonry (mason's workshop)
@@ -1068,6 +3173,7 @@ SKILL_MAP = {
     MILLING         = 16,   -- Milling (quern/millstone)
     LYE_MAKING      = 64,   -- Lye Making (ashery, chemist)
     LYE_MAKING      = 64,   -- Lye Making (ashery, chemist)
+    PRESSING        = 111,  -- Pressing (screw press)
 
     -- Glazing. Verified as 110 from the GLAZE_CRAFT_ASH path map,
     -- not inferred: that reaction carries [SKILL:GLAZING] in raws and
@@ -1247,6 +3353,21 @@ CLONE_SIGNATURES = {
         require_false = {},
         prefer        = {},
     },
+    -- ==========================================
+    -- CLONE SOURCE SCORING — PLANTS
+    -- ==========================================
+    PLANT_CLONE_SIGNATURES = {
+        BASIC_CROP = {
+            require_true  = { "SEED", "DRINK" },
+            require_false = { "TREE", "SAPLING" },
+            prefer        = { "SUMMER" }
+        },
+        TREE_TYPE = {
+            require_true  = { "TREE", "SAPLING" },
+            require_false = { "SEED" },
+            prefer        = {}
+        }
+    }
 }
 
 

@@ -1245,12 +1245,12 @@ inorganic. Vanilla materials use their bare ID (<code>IRON</code>, <code>GYPSUM<
 </thead>
 <tbody>
 <tr>
-<td><code>METAL_BAR</code></td>
+<td><code>BAR</code></td>
 <td>One specific metal</td>
 <td><code>mat_id</code></td>
 </tr>
 <tr>
-<td><code>BAR_ANY</code></td>
+<td><code>BAR</code></td>
 <td>Any bar at all</td>
 <td></td>
 </tr>
@@ -1406,7 +1406,7 @@ inorganic. Vanilla materials use their bare ID (<code>IRON</code>, <code>GYPSUM<
 <td><code>mat_id</code></td>
 </tr>
 <tr>
-<td><code>BLOCKS_ANY</code></td>
+<td><code>BLOCKS</code></td>
 <td>Blocks of anything</td>
 <td></td>
 </tr>
@@ -1680,7 +1680,7 @@ can end up worth less than its own ingredients.</p>
 <p><code>value_from_reaction</code> is not part of RM's schema. RM ignores unknown fields, so
 it passes through untouched and your Lua file reads it. The template's
 <code>calculate_weighted_value</code> averages the live material values of the reaction's
-<code>METAL_BAR</code> reagents, weighted by quantity.</p>
+<code>BAR</code> reagents, weighted by quantity.</p>
 <h3 id="sec-7-4" data-num="7.4"><a class="anchor" href="#sec-7-4" aria-label="Link to this section">#</a><span class="h-num">7.4</span><span class="h-text">Resolving materials at runtime</span></h3>
 <p>Sand is the standard case. Vanilla ships five sand materials and mods add or
 remove more, so your JSON cannot name one. But it cannot leave the slot as a

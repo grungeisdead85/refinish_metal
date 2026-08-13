@@ -123,13 +123,13 @@
                     "_comment_code": "Required. Local label for this slot. Lowercase, unique within this reaction.",
                     "code": "main_metal",
 
-                    "_comment_type": "Required. Names an entry in REAGENT_TYPES, which fixes the item type and material class. METAL_BAR, BAR_ANY, COAL, BOULDER, BOULDER_ANY, FLUX, ORE_OF, POWDER, BAG, BUCKET, BARREL, WATER, ROUGH, BLOCKS, ROCK, JUG and more. Guide section 5.2 has the full list with what each one matches.",
-                    "type": "METAL_BAR",
+                    "_comment_type": "Required. Names an entry in REAGENT_TYPES, which fixes the item type and material class. BAR, BAR, COAL, BOULDER, BOULDER_ANY, FLUX, ORE_OF, POWDER, BAG, BUCKET, BARREL, WATER, ROUGH, BLOCKS, ROCK, JUG and more. Guide section 5.2 has the full list with what each one matches.",
+                    "type": "BAR",
 
                     "_comment_quantity": "Required. How many units this slot consumes. Bars and boulders count as whole items. Powders and liquids count in dimension units, where 150 is one full bag or bucket.",
                     "quantity": 1,
 
-                    "_comment_mat_id": "Required by the types that need a specific material (METAL_BAR, BOULDER, BLOCKS, ROUGH, LIQUID_INORGANIC). Optional on POWDER, where omitting it makes the slot accept any powder. Meaningless on the wildcard types, which ignore it.",
+                    "_comment_mat_id": "Required by the types that need a specific material (BAR, BOULDER, BLOCKS, ROUGH, LIQUID_INORGANIC). Optional on POWDER, where omitting it makes the slot accept any powder. Meaningless on the wildcard types, which ignore it.",
                     "mat_id": "COPPER",
 
                     "_comment_metal_id": "Required by ORE_OF and used by nothing else. Names the METAL, not the ore, and DF then matches any boulder that smelts to it.",
@@ -224,8 +224,8 @@
             "category": "RM_TEMPLATE_CAT_SMELTING_ALLOYS",
             "permissions": { "mode": "AUTO" },
             "reagents": [
-                { "code": "copper", "type": "METAL_BAR", "mat_id": "COPPER", "quantity": 3 },
-                { "code": "tin",    "type": "METAL_BAR", "mat_id": "TIN",    "quantity": 1 }
+                { "code": "copper", "type": "BAR", "mat_id": "COPPER", "quantity": 3 },
+                { "code": "tin",    "type": "BAR", "mat_id": "TIN",    "quantity": 1 }
             ],
             "products": [
                 {
@@ -249,7 +249,7 @@
             "permissions": { "mode": "AUTO" },
             "reagents": [
                 { "code": "ore",  "type": "ORE_OF", "metal_id": "COPPER", "quantity": 1 },
-                { "code": "tin",  "type": "METAL_BAR", "mat_id": "TIN", "quantity": 1 },
+                { "code": "tin",  "type": "BAR", "mat_id": "TIN", "quantity": 1 },
                 { "code": "flux", "type": "FLUX", "quantity": 1 }
             ],
             "products": [
@@ -517,7 +517,7 @@
             "reagents": [
                 {
                     "code": "bars",
-                    "type": "METAL_BAR",
+                    "type": "BAR",
                     "mat_id": "RM_TEMPLATE_DEMO_BRONZE",
                     "quantity": 3
                 }
