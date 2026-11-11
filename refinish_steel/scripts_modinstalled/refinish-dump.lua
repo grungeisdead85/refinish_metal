@@ -28,6 +28,52 @@ local json = require('json')
 local dialogs = require('gui.dialogs')
 local dbg = reqscript('refinish-debug')
 
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body.
+--
+-- The panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: EXPORT for the run, FILE for the
+-- file it writes.
+--
+-- This replaces bare untagged lines under the DIAGNOSTIC DUMP prefix.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else. The dump's outcome also shows in a dialog,
+-- since the log panel's dump button is what runs it.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'DIAGNOSTIC_DUMP'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
 
 -- ==========================================
 -- SHARED UTILITIES
@@ -86,7 +132,9 @@ local function export_diagnostic_dump()
     local file = io.open(file_path, "w")
 
     if not file then
-        if _G.refinish_log_event then _G.refinish_log_event("DIAGNOSTIC DUMP ERROR: Could not create file -> " .. file_path) end
+        -- DETAIL: execute() reports the failure as the ERROR. This is
+        -- the path it could not write.
+        log('DETAIL', 'Could not create ' .. tostring(file_path) .. '.', 'FILE')
         return false, "Could not create dump file."
     end
 
@@ -132,22 +180,26 @@ local function export_diagnostic_dump()
     file:write(string.format("  %-22s %s\n", "Player Civ:", civ_str))
 
     subsection(file, "CONFIGURATION")
-    file:write(string.format("  %-22s %s\n", "Save Protocol:", get_pref('refinish_config_save_protocol', 'AUTOSAVE')))
     file:write(string.format("  %-22s %s\n", "Material Finishes:", get_pref('refinish_config_perf', 'ON')))
-    file:write(string.format("  %-22s %s\n", "Protect Bases:", get_pref('refinish_config_protect', 'YES')))
-    file:write(string.format("  %-22s %s\n", "Load Delay:", get_pref('refinish_config_delay', 'TICK')))
+    file:write(string.format("  %-22s %s\n", "Protect Bases:", get_pref('refinish_config_protect', 'NO')))
+    -- LOAD DELAY OPTION (removed): startup always injects at once, so a
+    -- delay read from site data reports a setting nothing uses.
+    -- file:write(string.format("  %-22s %s\n", "Load Delay:", get_pref('refinish_config_delay', 'TICK')))
     file:write(string.format("  %-22s %s\n", "Autosave Interval:", get_pref('refinish_config_interval', 'SEASONAL')))
     file:write(string.format("  %-22s %s\n", "Pause on Autosave:", get_pref('refinish_config_pause', 'YES')))
-    file:write(string.format("  %-22s %s\n", "Menu-Bound Data:", get_pref('refinish_config_esc', 'AUTO')))
     file:write(string.format("  %-22s %s\n", "Verbosity:", get_pref('refinish_config_msg', 'GUIDED')))
+    file:write(string.format("  %-22s %s\n", "Polling Rate:", get_pref('refinish_config_poll_rate', 'FAST')))
+    file:write(string.format("  %-22s %s\n", "Log Detail:", get_pref('refinish_config_log', 'QUIET')))
+    file:write(string.format("  %-22s %s\n", "Byproducts:", get_pref('refinish_config_byproducts', 'ON')))
+    file:write(string.format("  %-22s %s\n", "Byproduct Rate:", get_pref('refinish_config_byproduct_rate', '100') .. '%'))
 
     subsection(file, "PIPELINE STATE")
     file:write(string.format("  %-22s %s\n", "Active:", bfmt(_G.refinish_active)))
     file:write(string.format("  %-22s %s\n", "Menu Locked:", bfmt(_G.refinish_menu_locked)))
+    file:write(string.format("  %-22s %s\n", "Save Hook:", tostring(_G.refinish_save_hook_mode or 'inactive')))
     file:write(string.format("  %-22s %s\n", "Materials Loaded:", bfmt(_G.refinish_ram_loaded)))
     file:write(string.format("  %-22s %s\n", "Reactions Loaded:", bfmt(_G.refinish_reactions_loaded)))
     file:write(string.format("  %-22s %s\n", "Permissions Loaded:", bfmt(_G.refinish_entity_loaded)))
-    file:write(string.format("  %-22s %s\n", "Payload Loaded:", bfmt(_G.refinish_data_loaded)))
 
 
     -- ==========================================
@@ -176,11 +228,10 @@ local function export_diagnostic_dump()
     file:write(string.format("  %-22s %s\n", "Index Materials:", tfmt(st.t_idx_mat)))
     file:write(string.format("  %-22s %s\n", "Index Reactions:", tfmt(st.t_idx_rxn)))
     file:write(string.format("  %-22s %s\n", "Index Entities:", tfmt(st.t_idx_ent)))
-    file:write(string.format("  %-22s %s\n", "Payload Load:", tfmt(st.t_load)))
+    file:write(string.format("  %-22s %s\n", "Migration:", tfmt(st.t_load)))
 
     subsection(file, "LAST SAVE CYCLE")
     local ls = tel.last_save or {}
-    file:write(string.format("  %-22s %s\n", "Protocol:", ls.protocol or "N/A"))
     file:write(string.format("  %-22s %s\n", "Timestamp:", ls.timestamp or "N/A"))
     file:write(string.format("  %-22s %s\n", "Active Time:", tfmt(ls.t_active)))
     file:write(string.format("  %-22s %s\n", "Clear Entities:", tfmt(ls.t_clr_ent)))
@@ -256,13 +307,16 @@ local function export_diagnostic_dump()
 
 
     -- ==========================================
-    -- 5. JSON PAYLOAD
+    -- 5. LEGACY PAYLOAD
     -- ==========================================
-    section(file, "5", "JSON PAYLOAD")
+    -- The retired save wash's JSON payload (2026-09-29). Startup migrates
+    -- and deletes it on the first load of a save the old line wrote, so
+    -- anything shown here is a payload still waiting for that load.
+    section(file, "5", "LEGACY PAYLOAD")
 
     local payload_raw = dfhack.persistent.getSiteData("REFINISH_STEEL_PAYLOAD")
     if not payload_raw or payload_raw == "" then
-        file:write("  Status: EMPTY (no archived finishes)\n")
+        file:write("  Status: NONE (never written, or already migrated)\n")
     else
         local ok, data = pcall(json.decode, payload_raw)
         if not ok or not data then
@@ -387,7 +441,7 @@ local function export_diagnostic_dump()
     if _G.refinish_blueprint then
         local bp = _G.refinish_blueprint
 
-        for _, tbl_name in ipairs({"materials", "reactions", "categories", "original_names"}) do
+        for _, tbl_name in ipairs({"materials", "reactions", "categories"}) do
             local tbl = bp[tbl_name]
             local count = tcount(tbl)
             subsection(file, string.upper(tbl_name) .. " (" .. count .. " entries)")
@@ -404,8 +458,6 @@ local function export_diagnostic_dump()
                         file:write(string.format("  %s -> %s\n", k, v.name or "?"))
                     elseif tbl_name == "categories" then
                         file:write(string.format("  %s -> parent:%s\n", k, v.parent or ""))
-                    elseif tbl_name == "original_names" then
-                        file:write(string.format("  %s -> name:%s adj:%s\n", k, v.name or "?", v.adj or "?"))
                     end
                 end
             end
@@ -473,16 +525,18 @@ end
 -- ==========================================
 function execute()
     local THEME = reqscript('refinish-theme').get_current_theme()
-    if _G.refinish_log_event then _G.refinish_log_event("DIAGNOSTIC DUMP: Export initiated.") end
+    log('DETAIL', 'Export initiated.', 'EXPORT')
 
     local ok, result = export_diagnostic_dump()
     if ok then
-        if _G.refinish_log_event then _G.refinish_log_event("DIAGNOSTIC DUMP: Saved -> " .. result) end
+        -- INFO: a player asked for this and will want to know where it
+        -- went.
+        log('INFO', 'Saved to ' .. tostring(result) .. '.', 'EXPORT')
         dialogs.showMessage("Dump Successful",
             "Diagnostic dump saved to your Dwarf Fortress folder:\n\n" .. result,
             THEME.PRI)
     else
-        if _G.refinish_log_event then _G.refinish_log_event("DIAGNOSTIC DUMP ERROR: " .. tostring(result)) end
+        log('ERROR', 'Dump failed: ' .. tostring(result), 'EXPORT')
         dialogs.showMessage("Dump Failed",
             "Error: " .. tostring(result),
             THEME.RISK_M)

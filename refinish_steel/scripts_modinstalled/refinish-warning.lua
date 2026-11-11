@@ -1,19 +1,163 @@
 --@ module = true
 -- refinish-warning.lua
+-- ==========================================
+-- THE OPTIONS SCREEN SHORTCUT
+-- ==========================================
+-- This overlay was the save warning: red while RM's data was loaded,
+-- telling the player not to save from the options screen, and in AUTO
+-- saying the data was being unloaded, because opening the screen
+-- unloaded it. refinish-save-hook.lua now unloads RM for the game's own
+-- saves from the moment one is asked for, so every save from this
+-- screen is safe, and the warning went with the ESC-menu data cycle
+-- (2026-09-29). It had also been reading two core flags only, so it
+-- could say nothing true about a module's data.
+--
+-- What stays is the shortcut to Refinish Metal's configuration. The
+-- file, class and widget names are kept, so the widget keeps its
+-- identity in DFHack's overlay settings and control panel; its stored
+-- position is reset by its version (WHERE THE BOX SITS).
+-- ==========================================
 
 local overlay = require('plugins.overlay')
 local widgets = require('gui.widgets')
 local gui = require('gui')
 
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the overlay control a line is
+-- about. Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'OVERLAY'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
+-- ==========================================
+-- WHERE THE BOX SITS
+-- ==========================================
+-- Directly over the ESC menu. The 52x11 warning box sat there at
+-- x = 70, y = 10 (positive values count from the left and top of the
+-- interface area). The shortcut keeps that box's centre column and
+-- bottom row: 46 wide puts its left edge 3 columns further right
+-- (x = 73), 3 tall puts its top 8 rows lower (y = 18).
+--
+-- version went from "3.2" to "4.0.0": DFHack resets a widget's stored
+-- position and enabled state when its version changes, so a position
+-- saved for the 52x11 box cannot hold this one out of place.
+--
+-- WIDTH: 46 fits the longest binding the configuration panel offers,
+-- "Ctrl-Shift-" and a letter (12 characters), then ": Refinish Metal
+-- Configuration" (30), with a space either side, inside the border.
+-- A shorter binding is centred (THE LINE, below).
+-- ==========================================
+local BOX_W, BOX_H = 46, 3
+local INNER_W = BOX_W - 2   -- the border takes a column each side
+local LABEL = 'Refinish Metal Configuration'
+
+-- ==========================================
+-- THE REAL HOTKEY
+-- ==========================================
+-- The configuration panel saves the player's binding in site data
+-- (refinish_hk_config, refinish-panel-config.lua) and binds it to
+-- 'refinish-hud show config'. refinish_steel.lua binds the same key at
+-- map load with no focus context, so it opens the configuration from
+-- this screen as well. This overlay therefore binds no key of its own
+-- (it used to bind Alt+C, which nothing else knew about): it shows the
+-- real binding, and a click on it opens the same screen.
+--
+-- Read on every frame the box is drawn, cheaply: the stored text is
+-- fetched without decoding (getSiteDataString, one C++ read) and is
+-- decoded only when it changes, which is when the panel saves a new
+-- binding. The same pattern as PROTECTED BASES, CACHED in
+-- refinish_steel.lua. false, not nil, marks "never read": nil is what a
+-- fort with no saved binding returns, and it reads as the default.
+-- ==========================================
+local HK_PREF, HK_DEFAULT = 'refinish_hk_config', 'Ctrl-Shift-C'
+local hk_raw_seen, hk_shown = false, HK_DEFAULT
+
+local function config_hotkey()
+    local raw = nil
+    pcall(function() raw = dfhack.persistent.getSiteDataString(HK_PREF) end)
+    if raw == hk_raw_seen then return hk_shown end
+    hk_raw_seen = raw
+    local v = nil
+    pcall(function() v = dfhack.persistent.getSiteData(HK_PREF) end)
+    hk_shown = (type(v) == 'string' and v ~= '') and v or HK_DEFAULT
+    return hk_shown
+end
+
+-- ==========================================
+-- THE LINE
+-- ==========================================
+-- "<binding>: Refinish Metal Configuration", centred in the inner
+-- width. The key in light green and the label in light blue, the
+-- colours this shortcut has always used (RM's PRI and SEC defaults).
+-- ==========================================
+local function pad_text()
+    local len = #config_hotkey() + 2 + #LABEL
+    return string.rep(' ', math.max(0, math.floor((INNER_W - len) / 2)))
+end
+
+-- A click opens what the hotkey opens. This used to run
+-- 'refinish-config show', and RM has no script of that name, so the
+-- shortcut could never open anything.
+local function open_config()
+    -- DETAIL: menu navigation is only useful when debugging.
+    log('DETAIL', 'Configuration opened from the options screen shortcut.',
+        'SHORTCUT')
+    local ok, err = pcall(dfhack.run_script, 'refinish-hud', 'show', 'config')
+    if not ok then
+        -- ERROR: the click did nothing. The hotkey runs the same command,
+        -- so the reason here is the reason it would fail too.
+        log('ERROR', 'The configuration did not open: ' .. tostring(err),
+            'SHORTCUT')
+    end
+end
+
 RefinishWarningOverlay = defclass(RefinishWarningOverlay, overlay.OverlayWidget)
 RefinishWarningOverlay.ATTRS = {
-    desc = "Refinish Warning Overlay",
-    default_pos = {x = 70, y = 10},
+    desc = "Refinish Metal configuration shortcut on the options screen",
+    -- WHERE THE BOX SITS, above: position, version and size together.
+    default_pos = {x = 73, y = 18},
     default_enabled = true,
     viewscreens = 'dwarfmode/Options',
-    version = "3.2",
+    version = "4.0.0",
 
-    frame = {w = 52, h = 11},
+    -- One line inside a bold border.
+    frame = {w = BOX_W, h = BOX_H},
     frame_style = gui.FRAME_BOLD,
     frame_background = gui.CLEAR_PEN,
 
@@ -32,85 +176,16 @@ RefinishWarningOverlay.ATTRS = {
 }
 
 function RefinishWarningOverlay:init()
-    local function is_safe()
-        return (not _G.refinish_data_loaded) and (not _G.refinish_ram_loaded)
-    end
-
-    -- HELPER: Check the active menu wipe setting
-    local function get_esc_mode()
-        local mode = dfhack.persistent.getSiteData('refinish_config_esc')
-        return (mode and mode ~= "") and mode or 'AUTO'
-    end
-
-    -- HELPER: Read the user's custom hotkeys
-    local function get_hk(id, default)
-        local hk = dfhack.persistent.getSiteData(id)
-        return (hk and hk ~= "") and hk or default
-    end
-
     self:addviews{
+        -- THE LINE: the whole inner row, so a click anywhere on it counts.
         widgets.Label{
-            frame = {l = 1, t = 1},
+            frame = {l = 0, t = 0, r = 0},
             text = {
-                {
-                    text = function() return is_safe() and "*** REFINISH METAL DATA IS NOT LOADED ***" or "!!! REFINISH METAL DATA IS LOADED !!!" end,
-                    pen = function() return is_safe() and COLOR_LIGHTGREEN or COLOR_RED end
-                }
-            }
-        },
-        widgets.Label{
-            frame = {l = 1, t = 3},
-            text = {
-                {
-                    text = function() return is_safe() and "It is safe to manually save the game." or "DO NOT MANUALLY SAVE WHILE DATA IS LOADED!" end,
-                    pen = function() return is_safe() and COLOR_LIGHTGREEN or COLOR_RED end
-                }
-            }
-        },
-        widgets.Label{
-            frame = {l = 1, t = 5},
-            text = {
-                {
-                    text = function()
-                        local mode = get_esc_mode()
-                        local hk_startup = get_hk('refinish_hk_startup', 'Ctrl-Alt-X')
-                        local hk_wipe = get_hk('refinish_hk_wipe', 'Ctrl-Shift-X')
-                        
-                        if mode == 'AUTO' then
-                            return is_safe() and "Close this menu to reload Refinish Metal" or "Please wait. Your data is being unloaded and preserved"
-                        else
-                            return is_safe() and "Press " .. hk_startup .. " to manually reload" or "Press " .. hk_wipe .. " to prevent save corruption"
-                        end
-                    end,
-                    pen = function() return is_safe() and COLOR_LIGHTGREEN or COLOR_RED end
-                }
-            }
-        },
-        widgets.Label{
-            frame = {l = 1, t = 6},
-            text = {
-                {
-                    text = function()
-                        local mode = get_esc_mode()
-                        if mode == 'AUTO' then
-                            return is_safe() and "data automatically and resume the game." or "to prevent manual save corruption and data loss."
-                        else
-                            return is_safe() and "Refinish Metal data and resume the game." or "by unloading the data BEFORE A MANUAL SAVE!"
-                        end
-                    end,
-                    pen = function() return is_safe() and COLOR_LIGHTGREEN or COLOR_RED end
-                }
-            }
-        },
-        widgets.HotkeyLabel{
-            frame = {l = 1, b = 0},
-            key = 'CUSTOM_ALT_C',
-            label = 'Refinish Metal Configuration',
-            on_activate = function() 
-                if _G.refinish_log_event then _G.refinish_log_event("OVERLAY: User launched config menu via custom hotkey.") end -- ADDED LOG
-                dfhack.run_script('refinish-config', 'show') 
-            end,
-            text_pen = COLOR_LIGHTBLUE
+                {text = pad_text},
+                {text = config_hotkey, pen = COLOR_LIGHTGREEN},
+                {text = ': ' .. LABEL, pen = COLOR_LIGHTBLUE},
+            },
+            on_click = open_config,
         }
     }
 end

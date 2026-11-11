@@ -6,6 +6,49 @@ local widgets = require('gui.widgets')
 local dialogs = require('gui.dialogs')
 
 -- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the panel action a line is
+-- about. Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'HELP'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
+-- ==========================================
 -- TEXT WRAPPING HELPER (With Paragraph Support)
 -- Splits text into display lines that fit within max_width.
 -- Blank lines in the source text produce blank separator lines.
@@ -42,6 +85,10 @@ end
 -- Each topic has: id, title, keywords[], text
 -- Keywords drive search; include synonyms and alternate phrasings.
 -- Text uses \n for line breaks and \n\n for paragraph spacing.
+--
+-- Every statement here is checked against the code it describes
+-- (2026-10-07). This is where players look first, so when the code
+-- changes, the topic changes with it.
 -- ==========================================
 local HELP_TOPICS = {
 
@@ -54,26 +101,30 @@ local HELP_TOPICS = {
         keywords = {"overview", "about", "what", "features", "summary", "introduction", "rawless"},
         text     =
             "Refinish Metal is a rawless DFHack mod that adds a material finishing " ..
-            "system to Dwarf Fortress. Dust ground from valid stone, gem, or metal " ..
-            "reagents is combined with a base metal at a Smelter to produce finished " ..
-            "bars, a new material that shares the base metal's physical properties " ..
-            "but takes its color and a portion of its value from the reagent.\n\n" ..
-            "Steel is the default base metal, but any sufficiently craftable metal " ..
-            "in your world can be configured as a base. Each active base generates " ..
-            "its own independent set of reactions and finished materials.\n\n" ..
-            "All custom data is hotloaded into RAM after map load and fully purged " ..
-            "before any save. Save files remain 100% vanilla-compatible. Archived " ..
-            "finish data is stored in a JSON payload embedded in site data and " ..
-            "restored automatically on every reload.\n\n" ..
+            "system to Dwarf Fortress. Dust ground from stone, gems or metal is " ..
+            "combined with bars of a base metal at a Smelter. The result is a " ..
+            "finished bar: a new material with the base metal's physical properties " ..
+            "and the dust's colour and name.\n\n" ..
+            "Every sufficiently craftable metal in your world is a base by default, " ..
+            "and the Base Metals panel can narrow the selection. Finishes are made as " ..
+            "your fort needs them: a base metal's finishes for a dust appear once the " ..
+            "fort has had that metal's bars and that dust.\n\n" ..
+            "All custom data is loaded into RAM after map load and taken out before " ..
+            "any save. Finished items keep their materials in the save, and a ledger " ..
+            "in site data moves them back into place by name on every reload. Loaded " ..
+            "without Refinish Metal, they show as plain rock.\n\n" ..
             "KEY FEATURES\n" ..
             "- Configurable base metals: finish any qualifying metal, not just steel.\n" ..
-            "- Grind validated stone, gem, or metal reagents into dust.\n" ..
-            "- Combine dust + base metal bars at a Smelter to produce finished bars.\n" ..
-            "- Three finish tiers: Colour, Special, and Material (1:1 per-reagent).\n" ..
-            "- Reagent validation filters unsuitable inorganics automatically.\n" ..
+            "- Grind stone, gems and metal bars into dust at a Quern or Millstone.\n" ..
+            "- Combine dust and base metal bars at a Smelter to make finished bars.\n" ..
+            "- Three kinds of finish: colour, special and material.\n" ..
+            "- Byproducts: jobs that destroy material pay part of it back as dust.\n" ..
+            "- Dust also makes grog bricks and mineral dyes, and metal dust melts " ..
+            "back into bars.\n" ..
             "- Reads live world data and economy on every load; modpack-compatible.\n" ..
-            "- Safe autosave system replaces vanilla autosave entirely.\n" ..
-            "- Status dashboard, live event log, and object inspector for diagnostics."
+            "- Every way of saving takes the mod's data out first, and the mod's own " ..
+            "autosave replaces vanilla's.\n" ..
+            "- Status dashboard, live event log and object inspector for diagnostics."
     },
 
     -- ----------------------------------------
@@ -85,25 +136,25 @@ local HELP_TOPICS = {
         keywords = {"start", "begin", "new", "first time", "install", "welcome", "setup", "how to"},
         text     =
             "FIRST LOAD\n" ..
-            "On first install, a welcome prompt will appear advising you to review " ..
-            "your settings (Ctrl-Shift-C). At minimum, check your autosave interval " ..
-            "and Menu-Bound Data Cycling setting before playing.\n\n" ..
-            "DATA LOADS ON UNPAUSE\n" ..
-            "After loading a save, mod data is not injected immediately. It loads " ..
-            "the first time you unpause the game. This ensures the engine is fully " ..
-            "stable before any RAM writes occur.\n\n" ..
+            "On first install, a prompt says Refinish Metal is online; press OK to " ..
+            "open System Settings. At minimum, check your autosave interval before " ..
+            "playing.\n\n" ..
+            "DATA LOADS AT ONCE\n" ..
+            "Mod data is loaded the moment a save finishes loading, before the first " ..
+            "game tick.\n\n" ..
             "BASIC WORKFLOW\n" ..
-            "1. Configure your base metals in the Base Metals panel (see 'Base Metals').\n" ..
-            "   Steel is active by default.\n" ..
-            "2. Order a Grind job at a Mason's Workshop, Jeweler's Workshop, or Forge.\n" ..
-            "   A bag must be available; all grinding requires one empty bag.\n" ..
-            "3. The dwarf grinds the reagent into dust, stored in the bag.\n" ..
-            "4. At any Smelter, order a finishing reaction using the dust + base bars.\n" ..
-            "   Each unit of dust in the bag finishes 3 bars.\n\n" ..
+            "1. Check your base metals in the Base Metals panel (see 'Base Metals'). " ..
+            "Every valid base metal is active by default.\n" ..
+            "2. At a Quern or Millstone, order a grind job: 'grind common stone into " ..
+            "dust', 'grind any stone into dust', 'grind rough gems into dust' or " ..
+            "'grind metal bars into dust'.\n" ..
+            "3. The dwarf grinds the material into dust, in stacks. No bag is needed.\n" ..
+            "4. At a Smelter, order a finishing reaction: 6 dust of one material and " ..
+            "3 bars of a base metal make 3 finished bars. A finish's reaction appears " ..
+            "once your fort has had that dust and those bars.\n\n" ..
             "SAVING\n" ..
-            "Use the mod's autosave (Ctrl-Shift-S) or leave Menu-Bound Cycling on " ..
-            "AUTO. Do not use vanilla Save & Continue while mod data is active. " ..
-            "See 'Saving Safely' for full details."
+            "Save any way you like; see 'Saving Safely'. The mod's autosave and " ..
+            "quicksave (Ctrl-Shift-S) replace vanilla's autosave."
     },
 
     -- ----------------------------------------
@@ -112,33 +163,29 @@ local HELP_TOPICS = {
     {
         id       = "base_metals",
         title    = "Base Metals",
-        keywords = {"base", "bases", "metal", "steel", "mithril", "iron", "configure", "select", "activate", "valid", "crafting path", "smelting"},
+        keywords = {"base", "bases", "metal", "steel", "iron", "configure", "select", "activate", "valid", "crafting path", "smelting", "ctrl shift m"},
         text     =
             "The base metal is what gets finished. Dust is applied to bars of the " ..
-            "base metal at the Smelter, producing finished bars that share the base " ..
-            "metal's physical and combat properties, with their color, name, and " ..
-            "material value overwritten by the reagent combination.\n\n" ..
-            "Steel is active by default. Any metal in your world that passes the " ..
-            "validation criteria can be added as a base.\n\n" ..
-            "VALIDATION CRITERIA FOR BASE METALS\n" ..
-            "A metal must meet all of the following to qualify:\n" ..
+            "base metal at a Smelter, making finished bars that keep the base metal's " ..
+            "physical and combat properties, with a new colour, name and value.\n\n" ..
+            "Every metal in your world that passes the checks below is active by " ..
+            "default; the Base Metals panel can narrow the selection.\n\n" ..
+            "WHICH METALS QUALIFY\n" ..
             "- Carries the IS_METAL flag.\n" ..
-            "- Has a valid crafting or smelting path (ghost metals with no production " ..
-            "  route are excluded).\n" ..
-            "- Thermally stable: melting point is 0 or above 10015.\n" ..
-            "- Non-negative material value.\n" ..
-            "- Carries at least one usability flag (ITEMS_METAL, ITEMS_WEAPON, " ..
-            "  ITEMS_ARMOR, ITEMS_HARD, etc.).\n" ..
-            "- Not flagged DIVINE or MYTHICAL (excluded by default).\n\n" ..
-            "CONFIGURING BASE METALS\n" ..
-            "Open the Base Metals panel from the main nav. The list shows all valid " ..
-            "bases in your world. Hover any entry to view its raw inorganic data. " ..
-            "Select metals and press G to save. Changing the selection cancels " ..
-            "active Refinish Metal jobs and triggers a full data cycle.\n\n" ..
-            "Each active base generates its own independent category tree and " ..
-            "reaction set in the workshop menus. Multiple active bases multiply " ..
-            "the total reaction and material count. Keep this in mind for " ..
-            "performance when Material Finishes is enabled."
+            "- Has a crafting or smelting path. Metals nothing can make are left out.\n" ..
+            "- Has a melting point of 0 or above 10015, so it stays solid in play.\n" ..
+            "- Has a material value of 0 or more.\n" ..
+            "- Carries at least one item flag, such as ITEMS_METAL, ITEMS_WEAPON, " ..
+            "ITEMS_ARMOR or ITEMS_HARD.\n" ..
+            "- Is not DIVINE or MYTHICAL.\n\n" ..
+            "THE BASE METALS PANEL\n" ..
+            "Open it from the main nav or with Ctrl-Shift-M. Selected metals are " ..
+            "listed first, then those your civilization knows, then the rest. Hover " ..
+            "any entry to see its raw data. Shift-A selects all, Shift-C clears all, " ..
+            "Shift-S saves and Shift-D discards your changes. Saving asks first, then " ..
+            "cancels jobs on Refinish Metal materials and runs a full data cycle.\n\n" ..
+            "Each active base gets its own finishes and reactions as your fort makes " ..
+            "them, so more active bases means more of both over time."
     },
 
     -- ----------------------------------------
@@ -147,35 +194,65 @@ local HELP_TOPICS = {
     {
         id       = "grinding",
         title    = "Grinding Dust",
-        keywords = {"grind", "dust", "powder", "bag", "mason", "jeweler", "forge", "stone", "gem", "metal", "yield", "reagent"},
+        keywords = {"grind", "grinding", "dust", "quern", "millstone", "stone", "gem", "metal", "yield", "reagent", "protect"},
         text     =
-            "Dust is the reagent that determines the color and nomenclature of the " ..
-            "finished bar. Every grinding job requires one empty bag. The workshop " ..
-            "and skill used depend on the source material.\n\n" ..
-            "STONE  |  Mason's Workshop  |  Masonry skill\n" ..
-            "- 'Grind common stone': processes non-economic boulders.\n" ..
-            "- 'Grind any stone': same, but also allows economic stones without " ..
-            "  adjusting the economic stone menu.\n" ..
-            "- Yield: 1 boulder -> 4 units of dust, stored in 1 bag.\n\n" ..
-            "GEMS  |  Jeweler's Workshop  |  Gem Cutting skill\n" ..
-            "- Processes rough gems only.\n" ..
-            "- Yield: 3 rough gems -> 1 unit of dust, stored in 1 bag.\n\n" ..
-            "METALS  |  Any Forge or Magma Forge  |  Metalcraft skill\n" ..
-            "- Processes metal bars.\n" ..
-            "- Yield: 1 bar -> 1 unit of dust, stored in 1 bag.\n\n" ..
-            "REAGENT VALIDATION\n" ..
-            "Not every inorganic qualifies. The scanner evaluates all world " ..
-            "inorganics at startup and rejects any that fail the following:\n" ..
-            "- Must be typed IS_STONE, IS_METAL, IS_GEM, SOIL_ANY, or SOIL_SAND.\n" ..
-            "- IS_METAL reagents must also have a valid production path " ..
-            "  (ghost metals are excluded).\n" ..
-            "- Must be thermally stable (not liquid or gaseous at normal temps).\n" ..
-            "- Powder state name must not already describe a granular material " ..
-            "  ('sand', 'dust', 'powder', 'ash', 'dirt').\n" ..
-            "SAFETY PROTOCOLS\n" ..
-            "Dwarves will refuse to grind bars of any active base metal " ..
-            "(configurable) and will never grind already-finished bars (hardcoded). " ..
-            "Either results in job cancellation and an announcement."
+            "Grinding turns stone, gems and metal bars into dust, which gives a " ..
+            "finished bar its colour and name. It happens at a Quern or Millstone, " ..
+            "needs no bag, and makes dust in stacks. The skill depends on what is " ..
+            "ground.\n\n" ..
+            "STONE | Masonry\n" ..
+            "- 'grind common stone into dust' takes non-economic boulders.\n" ..
+            "- 'grind any stone into dust' takes economic stone as well, without " ..
+            "changing your economic stone settings.\n" ..
+            "- 1 boulder makes 50 dust, in 4 stacks.\n\n" ..
+            "GEMS | Gem Cutting\n" ..
+            "- 'grind rough gems into dust' takes 3 rough gems and makes 3 dust. The " ..
+            "three quarters left over is kept at that workshop for its next grind.\n\n" ..
+            "METALS | Metalcraft\n" ..
+            "- 'grind metal bars into dust' takes 1 bar and makes 3 dust.\n" ..
+            "- It takes unfinished metals only. With Protect Bases on, it also leaves " ..
+            "your active base metals alone.\n" ..
+            "- Finished bars are ground in the 'Grind finished metals' folder, one " ..
+            "grinder per base metal, there once the fort has that base's finishes. " ..
+            "That dust melts back into bars of the same finish and never finishes a " ..
+            "bar.\n\n" ..
+            "Once a dwarf picks the item up, the job is named for it, as in 'grind " ..
+            "cinnabar into dust'.\n\n" ..
+            "WHICH MATERIALS QUALIFY\n" ..
+            "The scanner checks every inorganic in the world at startup. A material " ..
+            "qualifies when it:\n" ..
+            "- Is stone, metal, gem, soil or sand (IS_STONE, IS_METAL, IS_GEM, " ..
+            "SOIL_ANY or SOIL_SAND).\n" ..
+            "- Has a crafting or smelting path, if it is a metal.\n" ..
+            "- Has a melting point of 0 or above 10015.\n" ..
+            "- Has a material value of 0 or more."
+    },
+
+    -- ----------------------------------------
+    -- BRICKS, DYES & MELTING
+    -- ----------------------------------------
+    {
+        id       = "using_dust",
+        title    = "Bricks, Dyes & Melting",
+        keywords = {"dust", "grog", "brick", "bricks", "kiln", "clay", "dye", "dyes", "dyer", "mineral dye", "melt", "melting", "smelter", "part bar", "scrap"},
+        text     =
+            "Dust has uses beyond finishing.\n\n" ..
+            "GROG BRICKS\n" ..
+            "- At a Kiln, 'make clay bricks with stone dust' fires a clay boulder and 13 " ..
+            "stone dust into 8 clay bricks. Clay alone makes 6.\n\n" ..
+            "MINERAL DYES\n" ..
+            "- At a Dyer's Shop, 2 dust of a stone, gem or metal and an empty bag " ..
+            "make a dye of that material's colour. Each material has its own row " ..
+            "under Make dye > Make mineral dye.\n\n" ..
+            "MELTING\n" ..
+            "- Metal dust melts like any metal item: mark it for melting and queue " ..
+            "'melt a metal object' at a Smelter.\n" ..
+            "- Every melt returns nine tenths of what is in what it melted. A dust " ..
+            "holds a third of a bar; anything else holds what it cost to make, or its " ..
+            "own volume if that is less. Melting always loses metal; it never makes " ..
+            "it.\n" ..
+            "- A smelter keeps part bars, per metal, until they make a whole one. Its " ..
+            "sheet shows its melt bank."
     },
 
     -- ----------------------------------------
@@ -184,29 +261,29 @@ local HELP_TOPICS = {
     {
         id       = "finishing",
         title    = "Finishing Bars",
-        keywords = {"finish", "smelter", "combine", "coat", "bar", "reaction", "refine", "produce", "output"},
+        keywords = {"finish", "finishing", "smelter", "combine", "bar", "reaction", "colour", "color", "special", "material finish", "output", "fuel"},
         text     =
-            "All finishing reactions take place at a standard Smelter or Magma " ..
-            "Smelter. The output is a finished bar; a clone of the base metal " ..
-            "with its color, name, and material value overwritten.\n\n" ..
-            "REACTION INPUTS\n" ..
-            "- 1 unit of dust (from a bag)\n" ..
-            "- 3 bars of the relevant base metal\n\n" ..
-            "REACTION OUTPUT\n" ..
-            "- 3 finished bars\n\n" ..
-            "FINISH TIERS\n" ..
-            "1. Colour Finish: always available. Groups reagents by color and " ..
-            "   value tier. Two reagents with the same color and similar value " ..
-            "   may produce the same finish (e.g. 'red steel'). Minimizes RAM.\n\n" ..
-            "2. Special Finish: always available. Hardcoded overrides for " ..
-            "   significant materials. Examples:\n" ..
-            "   gold -> 'gilded [base]', iron -> 'ironclad [base]',\n" ..
-            "   zinc -> 'galvanized [base]', adamantine -> 'adamantinized [base]'.\n" ..
-            "   40+ prefixes defined. Always generated regardless of the Material " ..
-            "   Finishes toggle.\n\n" ..
-            "3. Material Finish: toggleable in settings. A strict 1:1 named finish " ..
-            "   per validated reagent (e.g. 'obsidian steel'). Most diverse and " ..
-            "   most memory-intensive. Toggling off preserves archived data in JSON."
+            "Finishing reactions take place at a Smelter or Magma Smelter. Each takes " ..
+            "6 dust of one material and 3 bars of a base metal, and makes 3 finished " ..
+            "bars: the base metal with a new colour, name and value. At an ordinary " ..
+            "Smelter it burns fuel.\n\n" ..
+            "A finish's reaction appears once your fort has had that base metal's " ..
+            "bars and that dust. Nothing is made for a pair the fort has never had.\n\n" ..
+            "KINDS OF FINISH\n" ..
+            "1. Colour finish: made whatever the Material Finishes setting. One per " ..
+            "colour per base metal, named for the colour (for example 'red steel'). " ..
+            "Every dust of that colour makes it.\n\n" ..
+            "2. Special finish: made whatever the Material Finishes setting, for 43 " ..
+            "materials with names of their own. Gold makes 'gilded' finishes, iron " ..
+            "'ironclad', zinc 'galvanized', adamantine 'adamantinized'.\n\n" ..
+            "3. Material finish: made only with Material Finishes ON. Named for the " ..
+            "material the dust came from (for example 'obsidian steel'). Materials " ..
+            "that give the same name share one finish.\n\n" ..
+            "A finish whose name already belongs to another material in your world is " ..
+            "not made, so it never hides that material.\n\n" ..
+            "While Material Finishes is OFF, items in a material finish wait on their " ..
+            "base metal and get the finish back when it is ON again. Finishes of a " ..
+            "base metal you deselect wait the same way."
     },
 
     -- ----------------------------------------
@@ -215,26 +292,64 @@ local HELP_TOPICS = {
     {
         id       = "economics",
         title    = "Value & Economics",
-        keywords = {"value", "worth", "economics", "wealth", "math", "price", "conservation", "material value", "mv"},
+        keywords = {"value", "worth", "economics", "wealth", "math", "price", "material value", "mv"},
         text     =
-            "The value of a finished bar is the base metal's material value plus " ..
-            "a weighted contribution from the reagent. The base metal's value is " ..
-            "the floor. It is not replaced, only added to.\n\n" ..
-            "All values are read from your world's live data on every load, so " ..
-            "economy-altering mods are automatically reflected.\n\n" ..
-            "REAGENT VALUE CONTRIBUTION\n" ..
-            "One dust unit finishes 3 bars, so each bar absorbs a share:\n\n" ..
-            "- Stone:  +floor(boulder value / 12) per bar\n" ..
-            "  (1 boulder -> 4 dust units; each finishes 3 bars)\n\n" ..
-            "- Metal:  +floor(bar value / 3) per bar\n" ..
-            "  (1 bar -> 1 dust unit; finishes 3 bars)\n\n" ..
-            "- Gem:    +full rough gem value per bar\n" ..
-            "  (3 gems -> 1 dust unit; finishes 3 bars)\n\n" ..
-            "This preserves value conservation: the total economic contribution " ..
-            "of the input reagents is fully distributed across the output bars.\n\n" ..
-            "Note: because the base metal's own value forms the floor, higher-value " ..
-            "bases (e.g. platinum, adamantine) produce inherently more valuable " ..
-            "finished bars than lower-value bases for the same reagent."
+            "A finished bar's value starts from its base metal's material value, " ..
+            "which is the floor. Every value is read from your world's live data on " ..
+            "every load, so mods that change values are reflected.\n\n" ..
+            "COLOUR AND SHARED FINISHES\n" ..
+            "A colour finish, and any finish several materials make, is worth exactly " ..
+            "its base metal: one material stands for many reagents, so it carries " ..
+            "none of their worth.\n\n" ..
+            "FINISHES ONE MATERIAL MAKES\n" ..
+            "A special or material finish that only one material makes adds a share " ..
+            "of that material's value (v): the share one bar's 2 dust carries.\n" ..
+            "- Stone: + floor(v / 25). A boulder makes 50 dust.\n" ..
+            "- Metal: + floor(v x 2 / 3). A bar makes 3 dust.\n" ..
+            "- Gem: + floor(v x 8 / 5). A rough gem makes 1.25 dust.\n\n" ..
+            "Because the base metal's value is the floor, finishes of a higher-value " ..
+            "base (platinum, adamantine) are worth more than the same finish on a " ..
+            "cheaper one."
+    },
+
+    -- ----------------------------------------
+    -- BYPRODUCTS & BANKS
+    -- ----------------------------------------
+    {
+        id       = "byproducts",
+        title    = "Byproducts & Banks",
+        keywords = {"byproduct", "byproducts", "waste", "offcut", "filings", "bank", "banked", "readout", "workshop", "dust"},
+        text     =
+            "Jobs that destroy material pay part of it back where the work was done, " ..
+            "measured from what each job actually used up.\n\n" ..
+            "WHAT COMES BACK\n" ..
+            "- Stone work: 40% of the stone lost, as dust.\n" ..
+            "- Gem cutting: all of the gem lost, as dust.\n" ..
+            "- Metal work: 60% of the metal lost, as dust.\n" ..
+            "- Installed modules can add byproducts of their own, such as gravel, slag or " ..
+            "sawdust.\n\n" ..
+            "Amounts too small for a whole item are banked at that workshop until " ..
+            "they make one, and kept through saves. A small panel beside a building's " ..
+            "sheet shows what it has banked, and a smelter's part bars.\n\n" ..
+            "The Byproducts and Byproduct Rate settings turn this down or off (see 'System " ..
+            "Configuration')."
+    },
+
+    -- ----------------------------------------
+    -- FORGE MENUS
+    -- ----------------------------------------
+    {
+        id       = "forge_menus",
+        title    = "Forge Menus",
+        keywords = {"forge", "menu", "task", "folder", "refinished metals", "back", "category", "list"},
+        text     =
+            "FORGE TASK MENU\n" ..
+            "At a Metalsmith's Forge, each item category files its finished metals in " ..
+            "a 'refinished metals' folder, then by base metal, then colour-based or " ..
+            "material-based finishes. Vanilla metals stay in the list as usual.\n\n" ..
+            "BACK\n" ..
+            "Every reaction folder, at any workshop, has a Back entry that returns to " ..
+            "the folder above."
     },
 
     -- ----------------------------------------
@@ -243,27 +358,28 @@ local HELP_TOPICS = {
     {
         id       = "saving",
         title    = "Saving Safely",
-        keywords = {"save", "saving", "corrupt", "corruption", "manual", "esc", "options", "overlay", "red", "green", "continue", "quit", "race"},
+        keywords = {"save", "saving", "corrupt", "corruption", "manual", "esc", "options", "continue", "quit", "cauldron", "tools", "missing"},
         text     =
-            "Refinish Metal data must be purged from RAM before the engine writes " ..
-            "to disk. Saving with active mod data in memory will corrupt the save.\n\n" ..
-            "THE WARNING OVERLAY\n" ..
-            "When you open the ESC/Options menu, an overlay shows current state:\n" ..
-            "- RED:   Data is active in RAM. Do NOT save.\n" ..
-            "- GREEN: Memory is washed. Safe to save.\n\n" ..
-            "SAFE SAVE METHODS\n" ..
-            "- Autosave (automatic): fully managed, always safe.\n" ..
-            "- Quicksave hotkey (Ctrl-Shift-S): triggers the full autosave routine.\n" ..
-            "- Manual save: with Menu-Bound Cycling on AUTO, open ESC and wait for " ..
-            "  GREEN, then save. Or manually purge (Ctrl-Shift-X), wait for GREEN.\n\n" ..
-            "RISKY METHODS\n" ..
-            "- Save & Continue: NEVER use while RED. The engine does not trigger " ..
-            "  a map unload, so the mod's automatic shutdown does not fire. " ..
-            "  Corruption is guaranteed.\n" ..
-            "- Save & Quit: triggers a map unload and fires the shutdown sequence, " ..
-            "  but a race condition between the engine write and the RAM purge " ..
-            "  makes this unreliable. Not recommended.\n\n" ..
-            "GOLDEN RULE: always wait for GREEN before any manual save."
+            "Refinish Metal's data has to be out of the game's arrays when the game " ..
+            "writes a save, and the mod takes care of that on every save.\n\n" ..
+            "HOW EACH SAVE IS HANDLED\n" ..
+            "- Save & Continue: mod data is unloaded the moment you ask for the save, " ..
+            "before the game writes, and reloaded when the options menu closes. The " ..
+            "game stays paused in between.\n" ..
+            "- Save & Quit: mod data is cleared as the map unloads, which the game " ..
+            "does before it writes.\n" ..
+            "- Autosave and quicksave (Ctrl-Shift-S): the mod's own cycle unloads, " ..
+            "saves and reloads (see 'Autosave Routine').\n\n" ..
+            "The short pause when you save is that unload and reload.\n\n" ..
+            "IF THE MOD'S FILES GO MISSING\n" ..
+            "If Refinish Metal's script files are moved or deleted while the game " ..
+            "runs, the mod raises an alarm and refuses Save & Continue rather than " ..
+            "write a save that would not load. Put the files back and restart " ..
+            "Dwarf Fortress, or quit without saving.\n\n" ..
+            "TOOLS\n" ..
+            "Items made as tools (dust, and the tools modules add) are recorded " ..
+            "before each save and put back after the next load. If one ever comes " ..
+            "back as a cauldron, its record was lost."
     },
 
     -- ----------------------------------------
@@ -272,28 +388,30 @@ local HELP_TOPICS = {
     {
         id       = "autosave",
         title    = "Autosave Routine",
-        keywords = {"autosave", "quicksave", "routine", "cycle", "pause", "purge", "buffer", "telemetry", "interval"},
+        keywords = {"autosave", "quicksave", "routine", "cycle", "pause", "purge", "buffer", "telemetry", "interval", "ctrl shift s"},
         text     =
-            "Refinish Metal fully replaces the vanilla autosave. The vanilla " ..
-            "autosave is disabled (set to -1) at boot.\n\n" ..
+            "Refinish Metal replaces the vanilla autosave, which is switched off " ..
+            "while the mod is loaded and restored when it unloads.\n\n" ..
             "AUTOSAVE SEQUENCE\n" ..
-            "1. Interval reached (or Ctrl-Shift-S pressed).\n" ..
-            "2. Game is paused (configurable, recommended to leave enabled).\n" ..
-            "3. All custom-finish items and buildings are reverted to their base " ..
-            "   metal; IDs and finish data are written to the JSON payload.\n" ..
-            "4. Custom materials, reactions, and permissions are deleted from RAM.\n" ..
-            "5. Physical scan confirms memory is 100% clear before proceeding. " ..
-            "   Re-scans every 10 frames until clean (the 'Reality Check' buffer). " ..
-            "   The save will not issue until this passes.\n" ..
-            "6. Native quicksave is issued.\n" ..
-            "7. Mod stays dormant. On the player's next unpause, the full startup " ..
-            "   sequence runs and restores all finishes from the payload.\n\n" ..
+            "1. The interval is reached, or Ctrl-Shift-S is pressed.\n" ..
+            "2. The game is paused for the whole cycle. Pause on Save decides only " ..
+            "whether it stays paused afterwards.\n" ..
+            "3. The material ledger records where every custom material sits.\n" ..
+            "4. Custom materials, reactions, categories and permissions, and the " ..
+            "modules' content, are removed from RAM. Items keep their materials.\n" ..
+            "5. A scan confirms memory is clear, checking again every 10 frames until " ..
+            "it is. The save is not issued before then.\n" ..
+            "6. The game's quicksave is issued.\n" ..
+            "7. The moment the save is written, the data is rebuilt and the ledger " ..
+            "moves anything that shifted back into place by name, before any game " ..
+            "tick runs.\n\n" ..
             "AUTOSAVE INTERVALS\n" ..
-            "Configurable in System Settings (Ctrl-Shift-C): Seasonal, Semi-Annual, " ..
-            "Yearly, or real-time intervals (15, 30, 60 min). Can be disabled.\n\n" ..
-            "TELEMETRY\n" ..
-            "In Guided or Debug mode, a post-save report shows exact timing and " ..
-            "item/building counts per phase of the cycle."
+            "Seasonal, Semi-Annual, Yearly, 15 minutes, 30 minutes, 1 hour, or Off. " ..
+            "Set it in System Settings.\n\n" ..
+            "WHEN IT FINISHES\n" ..
+            "An announcement gives the cycle's time, unless System Invasiveness is " ..
+            "Silent. In Debug, a prompt also waits before the quicksave. The event " ..
+            "log keeps the timing of each phase."
     },
 
     -- ----------------------------------------
@@ -302,60 +420,92 @@ local HELP_TOPICS = {
     {
         id       = "configuration",
         title    = "System Configuration",
-        keywords = {"config", "settings", "options", "hotkey", "rebind", "invasiveness", "delay", "performance", "material finishes", "menu bound", "cycling", "protect steel", "defaults"},
+        keywords = {"config", "settings", "options", "hotkey", "rebind", "invasiveness", "polling", "material finishes", "protect", "defaults", "byproducts", "log detail", "colours", "colors", "theme"},
         text     =
-            "Open System Settings with Ctrl-Shift-C (default).\n\n" ..
+            "Open System Settings with Ctrl-Shift-C, or from the shortcut on the " ..
+            "options (Esc) screen.\n\n" ..
             "AUTOSAVE\n" ..
-            "- Interval: Seasonal / Semi-Annual / Yearly / 15min / 30min / 60min / Off.\n" ..
-            "- Pause on autosave: toggle. Recommended ON.\n\n" ..
-            "MENU-BOUND DATA CYCLING\n" ..
-            "- AUTO: purges mod data when ESC menu opens; reloads on close. Safest.\n" ..
-            "- MANUAL: data stays loaded. Faster for developed forts with large " ..
-            "  finish counts, but requires manual purge before any vanilla save.\n\n" ..
-            "STARTUP LOAD DELAY\n" ..
-            "- Tick (default): injects data after the first unpause. Safest.\n" ..
-            "- Frames / Instant: injects while paused. Use only if needed.\n\n" ..
+            "- Interval: Seasonal (default), Semi-Annual, Yearly, 15 Min, 30 Min, 1 " ..
+            "Hour or Off.\n" ..
+            "- Pause on Save: the game is paused for every cycle either way. Yes " ..
+            "(default) leaves it paused afterwards; No resumes it if it was running.\n\n" ..
+            "POLLING RATE\n" ..
+            "- How often the grind job watcher checks for new grind jobs: Fast (every " ..
+            "10 frames, default), Normal (25) or Relaxed (50). With Protect Bases " ..
+            "on, the same watcher cancels a grind that took a protected base metal.\n\n" ..
             "MATERIAL FINISHES\n" ..
-            "- ON: generates a 1:1 named finish for every validated reagent.\n" ..
-            "- OFF: colour and special finishes only. Significantly lower RAM usage.\n" ..
-            "  Toggling mid-game cancels active jobs and triggers a full data cycle. " ..
-            "  Existing material finish data is preserved in the JSON payload.\n\n" ..
+            "- ON (default): material finishes are made as well as colour and special " ..
+            "ones.\n" ..
+            "- OFF: colour and special finishes only; items in a material finish wait " ..
+            "on their base metal until it is ON again.\n" ..
+            "- Changing it cancels jobs on Refinish Metal materials and runs a full " ..
+            "data cycle.\n\n" ..
             "SYSTEM INVASIVENESS\n" ..
-            "- Guided: confirmation prompts and guardrails (default).\n" ..
-            "- Passive: announcements only, no interruptions.\n" ..
-            "- Silent: suppresses non-critical notifications.\n" ..
-            "- Debug: adds timing data and diagnostic output.\n\n" ..
-            "PROTECT BASE METAL FROM GRINDERS\n" ..
-            "- Prevents dwarves from grinding bars of any active base metal.\n\n" ..
+            "- Guided (default): a prompt at each load says the mod is online; the " ..
+            "startup, shutdown and hard shutdown hotkeys ask first; prompts report " ..
+            "what they did, and what a data cycle run by a setting did.\n" ..
+            "- Passive: announcements instead of prompts; the shutdown and hard " ..
+            "shutdown hotkeys run without asking.\n" ..
+            "- Silent: nothing about the mod's own work, the autosave's completion " ..
+            "notice included; the shutdown and hard shutdown hotkeys run without " ..
+            "asking.\n" ..
+            "- Debug: Guided, with timings and counts in its prompts, and a prompt " ..
+            "before each autosave's quicksave.\n" ..
+            "- At every level the startup hotkey and any setting that runs a data " ..
+            "cycle ask first, and alerts and warnings always show.\n\n" ..
+            "PROTECT BASES\n" ..
+            "- Yes: the metal grinder leaves your active base metals alone. No by " ..
+            "default: with every base metal active, it would stop all metal grinding. " ..
+            "Changing it runs a full data cycle.\n\n" ..
+            "LOG DETAIL\n" ..
+            "- What the event log panel shows: Quiet (default: faults and key confirmations), " ..
+            "Info (all but debugging detail) or Debug (everything). The " ..
+            "log file on disk always keeps everything.\n\n" ..
+            "BYPRODUCTS\n" ..
+            "- ON (default): jobs that destroy material pay part of it back (see " ..
+            "'Byproducts & Banks').\n" ..
+            "- NO DUST: every byproduct but dust.\n" ..
+            "- OFF: none, and nothing is measured; the material is lost, as in " ..
+            "vanilla.\n" ..
+            "- Byproduct Rate scales everything the jobs pay, from 100% (the " ..
+            "default) down to 10%, for turning the output down while it is " ..
+            "still being tuned.\n" ..
+            "- Grinding and crushing make dust either way. A change applies from the " ..
+            "next job.\n\n" ..
+            "COLOURS\n" ..
+            "- Each of the panel's colours can be changed: Primary, Secondary, " ..
+            "Tertiary, Neutral Bold, Neutral Soft, Caution, Warning and Danger.\n\n" ..
             "HOTKEYS\n" ..
-            "All seven global hotkeys are rebindable from this panel. A 'Restore " ..
-            "Defaults' button reverts all settings and bindings instantly."
+            "- All 11 global hotkeys can be rebound here (see 'Default Hotkeys'). " ..
+            "Restore Default Settings (Shift-P) puts every setting and binding back, " ..
+            "with a data cycle when that changes Material Finishes or Protect Bases."
     },
 
     -- ----------------------------------------
-    -- MANUAL SHUTDOWN & HARD SHUTDOWN
+    -- SHUTDOWN COMMANDS
     -- ----------------------------------------
     {
         id       = "shutdown",
         title    = "Shutdown Commands",
-        keywords = {"shutdown", "wipe", "purge", "unload", "manual", "hard", "mem wipe", "cancel jobs", "ghosting", "ctrl shift x", "ctrl shift q"},
+        keywords = {"shutdown", "wipe", "purge", "unload", "startup", "manual", "hard", "cancel jobs", "ctrl shift x", "ctrl shift q", "ctrl alt x"},
         text     =
-            "MANUAL SHUTDOWN  (Ctrl-Shift-X default)\n" ..
-            "Purges all mod data from RAM: reverts finished items to their base " ..
-            "metal, writes the JSON payload, and clears custom materials, reactions, " ..
-            "and entity permissions from the engine arrays. Use before any manual save.\n\n" ..
-            "HARD SHUTDOWN  (Ctrl-Shift-Q default)\n" ..
-            "Same purge as Manual Shutdown, but first sweeps the map for active " ..
-            "Refinish Metal workshop jobs and forcefully cancels them.\n\n" ..
+            "MANUAL SHUTDOWN (Ctrl-Shift-X)\n" ..
+            "Takes all mod data out of RAM: custom materials, reactions and " ..
+            "civilization permissions, and the modules' content. Items keep their " ..
+            "materials. Saving does not need it; see 'Saving Safely'.\n\n" ..
+            "HARD SHUTDOWN (Ctrl-Shift-Q)\n" ..
+            "The same, after first cancelling every active job on Refinish Metal " ..
+            "materials or reactions.\n\n" ..
+            "MANUAL STARTUP (Ctrl-Alt-X)\n" ..
+            "Loads mod data back into RAM after a shutdown.\n\n" ..
             "WHY USE HARD SHUTDOWN?\n" ..
-            "Deleting reaction arrays while a dwarf is mid-task on a grinding or " ..
-            "finishing job can leave the engine in an inconsistent state. Canceling " ..
-            "those jobs first lets the engine reset the dwarf's AI cleanly. " ..
-            "Use Hard Shutdown when:\n" ..
-            "- Dwarves are actively working grinding or finishing orders.\n" ..
-            "- You are purging during unpaused gameplay.\n\n" ..
-            "Hard Shutdown is also triggered automatically when the Material Finishes " ..
-            "setting or the active Base Metals selection is changed mid-game."
+            "Removing reactions while a dwarf is mid-job on one can leave the engine " ..
+            "in an inconsistent state. Cancelling those jobs first lets the dwarf " ..
+            "reset cleanly. Use it when dwarves are working grinding or finishing " ..
+            "jobs, or when you purge with the game unpaused.\n\n" ..
+            "A hard shutdown and startup also run by themselves when you change " ..
+            "Material Finishes, Protect Bases or the Base Metals selection, and when " ..
+            "Restore Default Settings changes either of the first two."
     },
 
     -- ----------------------------------------
@@ -364,33 +514,51 @@ local HELP_TOPICS = {
     {
         id       = "compatibility",
         title    = "Compatibility",
-        keywords = {"compatible", "compatibility", "modpack", "mods", "load order", "rawless", "argmod", "aaco", "metallic", "caldfir", "amnesia", "architecture", "wall", "floor", "jit", "menu clutter"},
+        keywords = {"compatible", "compatibility", "modpack", "mods", "load order", "rawless", "argmod", "aaco", "metallic", "caldfir", "wall", "floor", "jit", "menu clutter"},
         text     =
-            "Refinish Metal is rawless and hotloads after all raw mods finish their " ..
-            "load order. Because it reads live world data, it is compatible with " ..
-            "mods that add materials, alter values, or change colors.\n\n" ..
+            "Refinish Metal is rawless and loads after every raw mod has finished. " ..
+            "Because it reads live world data, it works with mods that add materials, " ..
+            "change values or change colours.\n\n" ..
             "KNOWN COMPATIBLE\n" ..
-            "- ArgMOD (new materials, value/property changes)\n" ..
-            "- AACO (economy alterations)\n" ..
-            "- Caldfir's Metallic (color changes and additions)\n" ..
-            "- Any mod that does not trigger its own save routines and does not " ..
-            "  alter inorganic array index order after the world has loaded.\n\n" ..
+            "- ArgMOD (new materials, value and property changes)\n" ..
+            "- AACO (economy changes)\n" ..
+            "- Caldfir's Metallic (colour changes and additions)\n" ..
+            "- Any mod that does not run its own save routines and does not reorder " ..
+            "the inorganic array after the world has loaded.\n\n" ..
             "KNOWN INCOMPATIBLE\n" ..
-            "- Mods that run their own autosave or manual save routines. These write " ..
-            "  to disk without cycling Refinish Metal data out, causing corruption. " ..
-            "  No workaround unless those mods call the Refinish Metal shutdown first.\n\n" ..
-            "AMNESIA SYNC\n" ..
-            "If a dwarf builds a wall using a finished bar while mod data is dormant " ..
-            "(e.g. during a Menu-Bound purge session), the wall defaults to the base " ..
-            "metal. On next reload, the Amnesia Sync protocol cross-references the " ..
-            "JSON payload and force-syncs affected walls and auto-generated floors " ..
-            "to the correct finish.\n\n" ..
-            "MENU CLUTTER (JIT)\n" ..
-            "Grinding reactions are compiled Just-In-Time. A background watcher " ..
-            "intercepts each dwarf as they begin a generic grind order, identifies " ..
-            "the specific item in hand, and injects a correctly named ghost reaction " ..
-            "on the fly. Workshop menus stay clean regardless of how many reagents " ..
-            "or base metals are active."
+            "- Mods that run their own autosave or save routines. They write to disk " ..
+            "without taking Refinish Metal's data out first, which corrupts the save, " ..
+            "unless they call the Refinish Metal shutdown first.\n\n" ..
+            "BUILT WHILE DORMANT\n" ..
+            "If a dwarf builds a wall from a finished bar while mod data is out of " ..
+            "RAM (after a manual shutdown, say), the wall takes the bar's material as " ..
+            "it stands. On the next load the ledger moves walls and floors along with " ..
+            "the items, so they come back in the right finish.\n\n" ..
+            "MENUS STAY SHORT\n" ..
+            "Grind jobs are named on the fly: a watcher sees each dwarf start a " ..
+            "generic grind, reads the item in hand and names the job for it. Finishes " ..
+            "are made only for what your fort has had. Workshop menus stay short " ..
+            "however many reagents or base metals are active."
+    },
+
+    -- ----------------------------------------
+    -- MODULES
+    -- ----------------------------------------
+    {
+        id       = "modules",
+        title    = "Modules",
+        keywords = {"module", "modules", "making fuel", "making concrete", "addon", "extension", "fertilizer", "settings"},
+        text     =
+            "Refinish Metal can load modules: separate mods that add their own " ..
+            "materials, reactions, tools, plants and buildings through it, such as " ..
+            "Making Fuel and Making Concrete.\n\n" ..
+            "- A module's content loads and saves with Refinish Metal's own, the same " ..
+            "safe way.\n" ..
+            "- A module with settings gets its own page in the panel, after Civs.\n" ..
+            "- Services that only a module switches on, such as the fertilizer " ..
+            "service, stay off with Refinish Metal alone.\n\n" ..
+            "If a module, or part of one, is left out or refused, the event log says " ..
+            "why."
     },
 
     -- ----------------------------------------
@@ -399,31 +567,43 @@ local HELP_TOPICS = {
     {
         id       = "status",
         title    = "Status Dashboard",
-        keywords = {"status", "dashboard", "monitor", "health", "memory", "ram", "blueprint", "background", "tripwire", "watcher", "ping"},
+        keywords = {"status", "dashboard", "monitor", "health", "memory", "ram", "blueprint", "background", "save hook", "watcher", "loop cost", "lag", "ctrl shift i"},
         text     =
-            "Open the Status Dashboard with Ctrl-Shift-I (default).\n\n" ..
+            "Open the Status Dashboard with Ctrl-Shift-I.\n\n" ..
             "SYSTEM STATE\n" ..
-            "Shows whether mod data is currently active in RAM or washed. Displays " ..
-            "live timestamps from the three background monitors: UI Tripwire, " ..
-            "Autosave Loop, and JIT Job Watcher.\n\n" ..
+            "Shows whether mod data is in RAM, and the last check-in of the three " ..
+            "background monitors: Save Hook, Calendar Loop and JIT Watcher.\n\n" ..
             "LIVE MEMORY COUNTS\n" ..
-            "Real-time counts of injected custom materials, reactions, UI category " ..
-            "groups, and civilization workshop permissions in the engine's C++ arrays. " ..
-            "Also shows whether the Blueprint cache is live or cleared.\n\n" ..
-            "OBJECT INSPECTOR  (experimental)\n" ..
-            "Search any game object by ID, name, or map coordinates " ..
-            "(e.g. 'STEEL', 'SWORD', 'GRIND', '142,45,1'). Scans inorganics, " ..
-            "reactions, entities, items, buildings, constructions, and active jobs. " ..
-            "Currently most useful for materials and reactions.\n\n" ..
-            "MEMORY SHEETS\n" ..
-            "Selecting a result attempts to generate a stat sheet from live C++ " ..
-            "memory. Materials show base properties, temperature data, active flags, " ..
-            "and full combat physics (yield/fracture/strain across all force types). " ..
-            "Reactions show workshop permissions, reagents, and products. Map objects " ..
-            "show coordinates and active material composition.\n" ..
-            "A hotkey bridge to DFHack's native gm-editor is available per object.\n\n" ..
-            "Note: memory sheet reads are experimental and wrapped in protected calls. " ..
-            "Failed reads fail silently rather than crashing."
+            "Counts of injected materials, reactions, menu categories and " ..
+            "civilization permissions in the game's arrays, and whether the blueprint " ..
+            "cache is live or cleared.\n\n" ..
+            "LOOP COST\n" ..
+            "What every scheduled script loop in the session costs, in milliseconds " ..
+            "per second, calls per second and milliseconds per call: Refinish " ..
+            "Metal's, modules' and other mods' alike, so a slow game shows whose loop " ..
+            "it is."
+    },
+
+    -- ----------------------------------------
+    -- OBJECT INSPECTOR
+    -- ----------------------------------------
+    {
+        id       = "inspector",
+        title    = "Object Inspector",
+        keywords = {"inspect", "inspector", "object", "search", "ram", "memory sheet", "gm-editor", "ctrl shift e"},
+        text     =
+            "Open the Object Inspector with Ctrl-Shift-E. It is experimental.\n\n" ..
+            "- Ctrl-I searches by ID, name or map coordinates (for example 'STEEL', " ..
+            "'SWORD', 'GRIND', '142,45,1') across inorganics, reactions, entities, " ..
+            "items, buildings, constructions and active jobs.\n" ..
+            "- Selecting a result builds a sheet from live memory: materials show " ..
+            "their properties, temperatures, flags and combat physics; reactions show " ..
+            "their permissions, reagents and products; map objects show their " ..
+            "position and material.\n" ..
+            "- Ctrl-B returns to the results. Ctrl-G opens the object in DFHack's " ..
+            "gm-editor.\n\n" ..
+            "Sheet reads are wrapped so a failed read leaves a blank rather than a " ..
+            "crash."
     },
 
     -- ----------------------------------------
@@ -432,28 +612,25 @@ local HELP_TOPICS = {
     {
         id       = "civilizations",
         title    = "Civilization Dashboard",
-        keywords = {"civ", "civilization", "tech", "roster", "forge", "mason", "gem", "smelting", "alloying", "known metals", "entity", "race"},
+        keywords = {"civ", "civilization", "tech", "roster", "forge", "mason", "gem", "smelting", "alloying", "known metals", "entity", "race", "ctrl shift v"},
         text     =
-            "The Civilization Dashboard is accessible from the main panel nav. " ..
-            "It shows tech capability and Refinish Metal access data for every " ..
-            "civilization in the world, derived from the blueprint's civ tech cache.\n\n" ..
+            "Open the Civilization Dashboard with Ctrl-Shift-V or from the main nav. " ..
+            "It shows each civilization's tech and Refinish Metal access, from the " ..
+            "blueprint's civ tech cache.\n\n" ..
             "CIV LIST\n" ..
-            "- LOCAL: your active fortress civilization, shown first.\n" ..
-            "- GLOBAL: a summary roster of all currently filtered civs.\n" ..
-            "- Individual civs: listed alphabetically. Entries matching your civ's " ..
-            "  entity class are highlighted.\n\n" ..
-            "DOSSIER PANEL\n" ..
-            "Selecting a civ shows its tech flags (forging, stoneworking, gem-cutting), " ..
-            "its approved smelting and alloying metals, and the count of Refinish " ..
-            "Metal finishing reactions available to that civilization.\n\n" ..
+            "- LOCAL: your fortress's civilization, shown first.\n" ..
+            "- GLOBAL: a summary roster of all shown civs.\n" ..
+            "- Individual civs, listed alphabetically. Civs of your civ's entity " ..
+            "class are highlighted.\n\n" ..
+            "DOSSIER\n" ..
+            "Selecting a civ shows its tech (forging, stoneworking, gem cutting), the " ..
+            "metals it may smelt and alloy, and how many Refinish Metal finishing " ..
+            "reactions it can use so far. Finishes are made as your fort needs them, " ..
+            "so the count grows as you play.\n\n" ..
             "FILTERS\n" ..
-            "- Toggle unskilled civs (no forge/mason/gem tech) on/off.\n" ..
-            "- Toggle unknown civs (unresolved name or raw code) on/off.\n" ..
-            "- Search by name, race adjective, or entity class.\n\n" ..
-            "BASE METALS PANEL\n" ..
-            "The Base Metals panel lists every metal in your world that passes " ..
-            "validation. Hover any entry to view its raw inorganic data. Select " ..
-            "metals and press G to save; this triggers a full data cycle."
+            "- Shift-P hides or shows civs with no forge, mason or gem tech.\n" ..
+            "- Shift-U hides or shows civs whose name could not be resolved.\n" ..
+            "- Shift-L searches by name, race adjective or entity class."
     },
 
     -- ----------------------------------------
@@ -462,28 +639,34 @@ local HELP_TOPICS = {
     {
         id       = "logging",
         title    = "Logging & Diagnostics",
-        keywords = {"log", "event", "debug", "dump", "export", "session", "troubleshoot", "telemetry", "diagnostic", "txt", "file"},
+        keywords = {"log", "event", "debug", "dump", "export", "session", "troubleshoot", "telemetry", "diagnostic", "txt", "file", "search", "ctrl shift l"},
         text     =
             "LIVE EVENT LOG\n" ..
-            "Accessible from the main panel. Displays the in-memory event log, " ..
-            "newest events at the bottom. Capped at 5,000 lines.\n" ..
-            "- C: clear the live feed (RAM only; the disk log is unaffected).\n" ..
-            "- E: export a timestamped snapshot to a permanent file.\n\n" ..
+            "Open it with Ctrl-Shift-L or from the main nav. It shows the session's " ..
+            "events, newest at the bottom, up to 15,000 lines, coloured by type.\n" ..
+            "- Ctrl-F searches it: every word you type must appear in a line.\n" ..
+            "- Repeats close together fold into one line with a count.\n" ..
+            "- Log Detail, in System Settings, sets what it shows; the file on disk " ..
+            "keeps everything.\n" ..
+            "- Ctrl-C clears the live feed (RAM only; the file is untouched).\n" ..
+            "- Ctrl-L exports the log to refinish_log_<date>_<time>.txt.\n" ..
+            "- Ctrl-D exports the master diagnostic dump to " ..
+            "refinish_dump_<date>_<time>.txt.\n\n" ..
             "SESSION LOG FILES\n" ..
-            "All events are written in real time to 'refinish_session.log' in the " ..
-            "DF directory. On each new DF launch, the previous session log is " ..
-            "renamed to 'refinish_last_session.log'. You always have the current " ..
-            "session and one prior on disk.\n\n" ..
+            "Every event is written as it happens to refinish_session.log in the DF " ..
+            "folder. On each new DF launch, the previous one is renamed " ..
+            "refinish_last_session.log, so you always have this session and the one " ..
+            "before.\n\n" ..
             "MASTER DIAGNOSTIC DUMP\n" ..
-            "Exports 'refinish_debug.txt': a structural snapshot of the mod's " ..
-            "memory state at the moment of export. Covers:\n" ..
-            "- System state and all configuration values.\n" ..
-            "- Raw inorganic sweep: accepted reagents and reasons for rejections.\n" ..
-            "- Blueprint RAM dump: the full material and reaction cache.\n" ..
-            "- JSON payload audit: item/building counts and archived finish data.\n" ..
-            "- Civ tech permission cache: per-race tech and metal access data.\n\n" ..
-            "Use the dump when verifying load order behavior, investigating economy " ..
-            "discrepancies, or reporting issues."
+            "A snapshot of the mod's state at the moment of export:\n" ..
+            "- System state and every configuration value.\n" ..
+            "- The inorganic sweep: accepted reagents, and why the rest were " ..
+            "rejected.\n" ..
+            "- The blueprint: the full material and reaction cache.\n" ..
+            "- Any legacy payload from an old save still waiting to be migrated.\n" ..
+            "- The civ tech cache: each race's tech and metal access.\n\n" ..
+            "Use the dump to check load order behaviour, look into value oddities, or " ..
+            "report a problem."
     },
 
     -- ----------------------------------------
@@ -492,19 +675,23 @@ local HELP_TOPICS = {
     {
         id       = "hotkeys",
         title    = "Default Hotkeys",
-        keywords = {"hotkey", "keybind", "shortcut", "ctrl", "shift", "key", "binding", "rebind"},
+        keywords = {"hotkey", "hotkeys", "keybind", "shortcut", "ctrl", "shift", "alt", "key", "binding", "rebind"},
         text     =
-            "All hotkeys are rebindable in System Settings (Ctrl-Shift-C).\n\n" ..
-            "Ctrl-Shift-C  |  Open System Settings / Config\n" ..
-            "Ctrl-Shift-I  |  Open Status Dashboard & Inspector\n" ..
-            "Ctrl-Shift-S  |  Quicksave (full autosave routine)\n" ..
-            "Ctrl-Shift-X  |  Manual Shutdown (purge RAM)\n" ..
-            "Ctrl-Shift-Q  |  Hard Shutdown (cancel jobs, then purge RAM)\n" ..
-            "Ctrl-Shift-R  |  Manual Startup (reinject data)\n" ..
-            "Ctrl-Shift-H  |  Open Help / Search Documentation\n\n" ..
-            "Within the Help panel, pressing Ctrl-Shift-H opens the search prompt. " ..
-            "Enter any keyword or topic name to filter the topic list. " ..
-            "Leave the field blank and press Enter to clear the filter."
+            "Every hotkey can be rebound in System Settings.\n\n" ..
+            "Ctrl-Shift-C | System Settings\n" ..
+            "Ctrl-Shift-M | Base Metals\n" ..
+            "Ctrl-Shift-V | Civilizations\n" ..
+            "Ctrl-Shift-I | Status Dashboard\n" ..
+            "Ctrl-Shift-L | Event Log\n" ..
+            "Ctrl-Shift-E | Object Inspector\n" ..
+            "Ctrl-Shift-H | Help\n" ..
+            "Ctrl-Shift-S | Quicksave (the full autosave cycle)\n" ..
+            "Ctrl-Shift-X | Manual Shutdown\n" ..
+            "Ctrl-Shift-Q | Hard Shutdown\n" ..
+            "Ctrl-Alt-X | Manual Startup\n\n" ..
+            "In this Help panel, Ctrl-I opens the search prompt. Enter a keyword or a " ..
+            "topic name to filter the topics, or leave it blank and press Enter to " ..
+            "show them all."
     }
 
 }
@@ -661,10 +848,13 @@ function RefinishPanelHelp:prompt_search()
         "", 
         function(query)
             if not query or query == "" then
-                if _G.refinish_log_event then _G.refinish_log_event("HELP: User cleared search filter.") end
+                -- DETAIL: search tracking is only useful when debugging
+                -- the panel itself.
+                log('DETAIL', 'Search cleared.', 'SEARCH')
                 self:update_list("")
             else
-                if _G.refinish_log_event then _G.refinish_log_event("HELP: User searched for -> '" .. tostring(query) .. "'") end
+                log('DETAIL', "Searched for '" .. tostring(query) .. "'.",
+                    'SEARCH')
                 self:update_list(query)
             end
         end

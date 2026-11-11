@@ -1,5 +1,51 @@
 -- refinish-clear-entity.lua
--- Removes dynamically injected reactions from all civilization UIs globally.
+-- Removes dynamically injected reactions from all civilization UIs
+-- globally. Every log line is DETAIL: the shutdown or save cycle that
+-- calls this reports the outcome. The per-civ trace stays behind
+-- VERBOSE_DEBUG, in its own file.
+
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the step or thing a line is
+-- about. Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'CLEAR_ENTITY'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
 
 local VERBOSE_DEBUG = false
 local debug_file = nil
@@ -36,8 +82,7 @@ if _G.refinish_entity_loaded == nil or _G.refinish_entity_loaded == true then
 end
 
 if not _G.refinish_entity_loaded then
-    print("Refinish Metal: UI already locked. Skipping.")
-    if _G.refinish_log_event then _G.refinish_log_event("CLEAR ENTITY: UI already locked. Skipping.") end
+    log('DETAIL', 'Civ permissions already cleared. Skipping.')
     return
 end
 
@@ -85,11 +130,10 @@ for _, civ in ipairs(df.global.world.entities.all) do
 end
 
 if removed_count > 0 then
-    print(string.format("Refinish-Clear-Entity: Excised %d reactions globally from %d civilizations.", removed_count, entities_scrubbed))
-    if _G.refinish_log_event then _G.refinish_log_event(string.format("CLEAR ENTITY: Excised %d reactions globally from %d civilization UIs.", removed_count, entities_scrubbed)) end
+    log('DETAIL', string.format('Excised %d reaction permissions from %d'
+        .. ' civilizations.', removed_count, entities_scrubbed))
 else
-    print("Refinish-Clear-Entity: No UI elements found to clean globally.")
-    if _G.refinish_log_event then _G.refinish_log_event("CLEAR ENTITY: No UI elements found to clean globally.") end
+    log('DETAIL', 'No reaction permissions found to clear.')
 end
 
 if debug_file then

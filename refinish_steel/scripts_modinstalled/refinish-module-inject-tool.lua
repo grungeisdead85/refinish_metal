@@ -38,6 +38,61 @@
 -- a usable tool.
 -- ==========================================
 
+-- ==========================================
+-- LOG FUNNELS
+-- ==========================================
+-- RM's own, and peripheral rather than pipeline. Every line this file
+-- writes goes through one of the two funnels below, in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body.
+--
+-- The panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- Two subsystems, as this file always had: TOOL_INJECT for the inject,
+-- TOOL_CLEAR for the clear. One funnel per subsystem, from the same
+-- factory refinish_steel uses, so the call sites no longer pass it.
+-- SUBJECT is the correlation slot: the part of the job a line is
+-- about, or the module or prefix it concerns.
+--
+-- This replaces a log() that let refinish-log guess TYPE from the
+-- words (read_type) unless a call site said otherwise.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else.
+-- ==========================================
+local LOG_SYS = 'REFINISH_METAL'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function make_log(sub)
+    return function(typ, msg, subject)
+        if not _G.refinish_log_event then return end
+        local line
+        if rlog then
+            line = rlog.compose(LOG_SYS, sub, subject, typ, msg)
+        else
+            -- The composer failed to load. Same grammar, unsanitised.
+            line = string.format('%s %s %s %s | %s', LOG_SYS, sub,
+                tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+                tostring(msg))
+        end
+        _G.refinish_log_event(line)
+    end
+end
+
+local log_inject = make_log('TOOL_INJECT')
+local log_clear  = make_log('TOOL_CLEAR')
+
 local FIELD_MAP = {
     name         = "name",
     name_plural  = "name_plural",
@@ -101,11 +156,9 @@ local function set_field(struct, field, value, tool_id)
 
     local ok, err = pcall(function() struct[field] = value end)
     if not ok then
-        if _G.refinish_log_event then
-            _G.refinish_log_event(string.format(
-                "TOOL INJECT WARNING: '%s' has no field '%s'. Check FIELD_MAP. (%s)",
-                tostring(tool_id), tostring(field), tostring(err)))
-        end
+        log_inject('WARNING', string.format(
+            "'%s' has no field '%s'. Check FIELD_MAP. (%s)",
+            tostring(tool_id), tostring(field), tostring(err)), 'FIELD')
         return false
     end
     return true
@@ -128,15 +181,16 @@ end
 -- ==========================================
 
 local function invalidate_subtype_cache()
-    -- The react module exposes this if it has been updated. Until then
-    -- the global is the handshake, and react checks it before trusting
-    -- its own cache.
+    -- The global is the handshake: react's resolve_item_subtype checks it
+    -- on every call and empties its own cache before trusting it (ITEMDEF
+    -- CACHE INVALIDATION, refinish-module-react.lua).
+    --
+    -- This also used to call react's invalidate_itemdef_cache directly,
+    -- found by a script lookup by name on every call: 15 a load, 107 ms
+    -- (MEASURED 2026-10-01, the load clock, region4). With the global
+    -- checked on every call, that call did nothing the next lookup does
+    -- not do itself.
     _G.refinish_itemdef_cache_dirty = true
-
-    local ok, react = pcall(function() return reqscript('refinish-module-react') end)
-    if ok and react and react.invalidate_itemdef_cache then
-        pcall(function() react.invalidate_itemdef_cache() end)
-    end
 end
 
 
@@ -169,10 +223,14 @@ end
 -- SMALL_BOTTLE gives MAKING_FUEL_SMALL_BOTTLE. Reagents and products
 -- name that full string.
 --
+-- sprites: the sprite engine, when the caller already has it (the module
+-- engine finds it once a run). Without it, each tool's sprites look the
+-- engine up by name, as before.
+--
 -- Returns: count injected.
 -- ==========================================
 
-function inject_tools(tools, prefix, mod_name)
+function inject_tools(tools, prefix, mod_name, sprites)
     if not tools then return 0 end
 
     local defs = df.global.world.raws.itemdefs.tools
@@ -202,10 +260,8 @@ function inject_tools(tools, prefix, mod_name)
         end
 
         if exists then
-            if _G.refinish_log_event then
-                _G.refinish_log_event(string.format(
-                    "TOOL INJECT: '%s' already present, skipped.", id))
-            end
+            log_inject('DETAIL', string.format(
+                "'%s' already present, skipped.", id), 'SKIP')
         else
             local t = df.itemdef_toolst:new()
 
@@ -230,10 +286,10 @@ function inject_tools(tools, prefix, mod_name)
                     local want = def.flags[schema_key]
                     if want ~= nil then
                         local ok = pcall(function() t.flags[flag_name] = want end)
-                        if not ok and _G.refinish_log_event then
-                            _G.refinish_log_event(string.format(
-                                "TOOL INJECT WARNING: '%s' has no flag '%s'. Check FLAG_MAP.",
-                                id, flag_name))
+                        if not ok then
+                            log_inject('WARNING', string.format(
+                                "'%s' has no flag '%s'. Check FLAG_MAP.",
+                                id, flag_name), 'FLAG')
                         end
                     end
                 end
@@ -245,11 +301,25 @@ function inject_tools(tools, prefix, mod_name)
                     local use = resolve_tool_use(token)
                     if use then
                         pcall(function() t.tool_use:insert('#', use) end)
-                    elseif _G.refinish_log_event then
-                        _G.refinish_log_event(string.format(
-                            "TOOL INJECT WARNING: '%s' names unknown TOOL_USE '%s'.",
-                            id, tostring(token)))
+                    else
+                        log_inject('WARNING', string.format(
+                            "'%s' names unknown TOOL_USE '%s'.",
+                            id, tostring(token)), 'TOOL_USE')
                     end
+                end
+            end
+
+            -- Sprites, schema driven, same engine as materials.
+            if def.graphics then
+                -- The engine handed in, when there is one: looked up here
+                -- for every tool, it was 26 lookups a load, about 180 ms
+                -- (MEASURED 2026-10-01, the load clock, region4).
+                local ok_eng, eng = true, sprites
+                if not eng then
+                    ok_eng, eng = pcall(reqscript, 'refinish-sprite-engine')
+                end
+                if ok_eng and eng and eng.apply_to_tool then
+                    eng.apply_to_tool(t, def.graphics, id)
                 end
             end
 
@@ -263,11 +333,11 @@ function inject_tools(tools, prefix, mod_name)
         invalidate_subtype_cache()
     end
 
-    if _G.refinish_log_event then
-        _G.refinish_log_event(string.format(
-            "TOOL INJECT: %d tools injected for %s (prefix %s).",
-            count, tostring(mod_name), tostring(prefix)))
-    end
+    -- DETAIL: the module engine's roster already says which modules
+    -- came up; this is the count beneath it.
+    log_inject('DETAIL', string.format(
+        "%d tools injected for %s (prefix %s).",
+        count, tostring(mod_name), tostring(prefix)), tostring(mod_name))
 
     return count
 end
@@ -298,6 +368,46 @@ end
 function clear_tools(prefix)
     local defs = df.global.world.raws.itemdefs.tools
     local all  = df.global.world.raws.itemdefs.all
+
+    -- ---- CIV TOOL GRANTS COME OFF FIRST ----
+    -- refinish-module-evaluate-permissions grants a module tool that
+    -- asks for DF's native job to the fort's civ, as its subtype in
+    -- historical_entity.resources.tool_type. That is a POSITION in the
+    -- array this function is about to shrink and reindex, and it is
+    -- saved game state. Left in place it would point at nothing, or at
+    -- a different tool, both for the rest of the session and in the
+    -- save. So it is withdrawn here, before the erase, while the number
+    -- still means the tool, on every path that clears tools.
+    --
+    -- Every entity is swept rather than only the fort's civ, so a grant
+    -- from any earlier session or a console test cannot survive either.
+    -- Only runs when an owned tool is present, so a clear with nothing
+    -- left to remove costs one loop over the itemdefs.
+    local owned_subs = {}
+    for _, td in ipairs(defs) do
+        local ok, id = pcall(function() return td.id end)
+        if ok and tool_is_owned(id, prefix) then
+            pcall(function() owned_subs[td.subtype] = true end)
+        end
+    end
+    local withdrawn = 0
+    if next(owned_subs) then
+        for _, ent in ipairs(df.global.world.entities.all) do
+            pcall(function()
+                local v = ent.resources.tool_type
+                for i = #v - 1, 0, -1 do
+                    if owned_subs[v[i]] then
+                        v:erase(i)
+                        withdrawn = withdrawn + 1
+                    end
+                end
+            end)
+        end
+    end
+    if withdrawn > 0 then
+        log_clear('DETAIL', string.format("%d civ tool grant(s) withdrawn for"
+            .. " prefix %s.", withdrawn, tostring(prefix)), 'GRANTS')
+    end
 
     local count = 0
 
@@ -331,11 +441,9 @@ function clear_tools(prefix)
         invalidate_subtype_cache()
     end
 
-    if _G.refinish_log_event then
-        _G.refinish_log_event(string.format(
-            "TOOL CLEAR: %d tools removed for prefix %s. %d remain.",
-            count, tostring(prefix), #defs))
-    end
+    log_clear('DETAIL', string.format(
+        "%d tools removed for prefix %s. %d remain.",
+        count, tostring(prefix), #defs), tostring(prefix))
 
     return count
 end

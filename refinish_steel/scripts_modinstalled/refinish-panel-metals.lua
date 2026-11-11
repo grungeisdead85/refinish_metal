@@ -9,6 +9,49 @@ local dialogs = require('gui.dialogs')
 local json = require('json')
 local RefinishPrompt = reqscript('refinish-prompt').RefinishPrompt
 
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: what about the base metals a line
+-- concerns. Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'BASE_METALS'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
 RefinishPanelMetals = defclass(RefinishPanelMetals, widgets.Panel)
 RefinishPanelMetals.ATTRS = { theme = DEFAULT_NIL }
 
@@ -71,7 +114,10 @@ function RefinishPanelMetals:init()
                 on_yes = function()
                     dfhack.persistent.saveSiteData('refinish_config_bases', current_str)
                     self.initial_bases_str = current_str
-                    if _G.refinish_log_event then _G.refinish_log_event("Config: Base metals updated and saved. Triggering RAM cycle.") end
+                    -- INFO: a setting the player changed, and why the data
+                    -- cycle that follows ran.
+                    log('INFO', 'Base metals updated and saved. Triggering a'
+                        .. ' data cycle.', 'SELECTION')
                     
                     dfhack.run_script('refinish-hard-shutdown', 'SILENT')
                     dfhack.run_script('refinish-startup', 'SILENT')
@@ -139,7 +185,10 @@ function RefinishPanelMetals:init()
     if saved_bases_str and saved_bases_str ~= "" then
         pcall(function() self.active_bases = json.decode(saved_bases_str) end)
     else
-        self.active_bases["STEEL"] = true 
+        -- Nothing saved: every base with a refinishing path is on
+        -- (refinish-bases.lua, THE DEFAULT SELECTION); steel alone
+        -- until 2026-10-03.
+        self.active_bases = reqscript('refinish-bases').default_bases(valid_bases) or {} 
     end
     
     self.initial_bases_str = json.encode(self.active_bases)
@@ -163,8 +212,14 @@ function RefinishPanelMetals:init()
         on_submit = function(idx, choice)
             local id = choice.data.id
             if not choice.data.has_reaction then return end 
-            self.active_bases[id] = not self.active_bases[id]
-            self:refresh_list()
+            -- Off removes the key: false would still be a key, and a
+            -- saved selection of only false entries used to read as
+            -- non-empty (fixed in refinish-scan.lua, 2026-09-30).
+            self.active_bases[id] = (not self.active_bases[id]) or nil
+            -- Keep the order: re-sorting on a tick would slide another
+            -- metal under the cursor, since List:setChoices keeps the
+            -- cursor on its row number.
+            self:refresh_list(true)
         end,
     }
 
@@ -306,10 +361,10 @@ function RefinishPanelMetals:update_tooltip(base)
             {text = "save your settings using the button or hotkey (G)", pen = self.theme.SEC}, gui.NEWLINE,
             {text = "found below (this will trigger a data cycle).", pen = self.theme.SEC}, gui.NEWLINE, gui.NEWLINE,
 
-            {text = "  Selections which are available globally but not", pen = self.theme.SEC}, gui.NEWLINE,
-            {text = " available to your current civilization will be", pen = self.theme.SEC}, gui.NEWLINE,
-            {text = "found at the bottom of your selection list in a", pen = self.theme.SEC}, gui.NEWLINE,
-            {text = "different colour.", pen = self.theme.SEC}, gui.NEWLINE, gui.NEWLINE, 
+            {text = "  Selected metals are always listed first. Of the", pen = self.theme.SEC}, gui.NEWLINE,
+            {text = "rest, metals available globally but not to your", pen = self.theme.SEC}, gui.NEWLINE,
+            {text = "current civilization are listed below the ones it", pen = self.theme.SEC}, gui.NEWLINE,
+            {text = "knows, in a different colour.", pen = self.theme.SEC}, gui.NEWLINE, gui.NEWLINE, 
 
             {text = "  You can also click on the Show* button (F) to reveal", pen = self.theme.SEC}, gui.NEWLINE,
             {text = "any valid metals Refinish Metal evaluations determined", pen = self.theme.SEC}, gui.NEWLINE,
@@ -404,7 +459,17 @@ function RefinishPanelMetals:onRenderFrame(painter, rect)
     RefinishPanelMetals.super.onRenderFrame(self, painter, rect)
 end
 
-function RefinishPanelMetals:refresh_list()
+-- keep_order: true when a single metal was just ticked. The selected
+-- first order comes from the selection as it stood when this view was
+-- built (the panel opening, a search, select all, clear, discard, show
+-- or hide), not from live ticks: a tick changes its box, never a row.
+function RefinishPanelMetals:refresh_list(keep_order)
+    if not keep_order or not self.pinned then
+        self.pinned = {}
+        for id, on in pairs(self.active_bases) do
+            if on then self.pinned[id] = true end
+        end
+    end
     local choices = {}
     self.current_filtered_list = {}
     local valid_bases = _G.refinish_valid_bases
@@ -466,13 +531,21 @@ function RefinishPanelMetals:refresh_list()
         if a_dead and not b_dead then return false end
         if b_dead and not a_dead then return true end
         
-        -- 2. Keep Native metals grouped above Non-Native ones
+        -- 2. Selected above unselected, so a selection is seen at first
+        -- glance however long the list (2026-09-30). By the
+        -- selection this view was built on (refresh_list, keep_order).
+        local a_on = self.pinned[a.data.id] or false
+        local b_on = self.pinned[b.data.id] or false
+        if a_on and not b_on then return true end
+        if b_on and not a_on then return false end
+        
+        -- 3. Keep Native metals grouped above Non-Native ones
         local a_native = self.known_metals[a.data.id]
         local b_native = self.known_metals[b.data.id]
         if a_native and not b_native then return true end
         if b_native and not a_native then return false end
         
-        -- 3. Alphabetical sort within those groups
+        -- 4. Alphabetical sort within those groups
         return a.data.name < b.data.name
     end)
 

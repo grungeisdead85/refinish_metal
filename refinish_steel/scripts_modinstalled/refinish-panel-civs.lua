@@ -6,6 +6,49 @@ local widgets = require('gui.widgets')
 local dialogs = require('gui.dialogs')
 
 -- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the panel action a line is
+-- about. Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'CIV_DASH'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
+-- ==========================================
 -- SAFE NAME TRANSLATION
 -- ==========================================
 local function safe_translate_name(name_obj)
@@ -120,7 +163,12 @@ local function get_civ_data(civ, valid_bases, ui_dict)
         
         -- THE FIX: Perfectly mirror the indexer's base-metal-only requirement. 
         if data.rs_metal then
-            for base_id, finish_total in pairs(ui_dict.finish_counts) do
+            -- What the civ can make now: the finish reactions in the array
+            -- for each base it knows, counted as they are built
+            -- (refinish-mint-finish.lua, _G.refinish_finish_counts_minted).
+            -- Until 2026-10-03 this was the blueprint's count
+            -- (ui_dict.finish_counts), every finish that could be minted.
+            for base_id, finish_total in pairs(_G.refinish_finish_counts_minted or {}) do
                 if known_metals[base_id] then
                     local nice_name = ui_dict.metal_names[base_id] or base_id
                     table.insert(data.rs_list, nice_name)
@@ -601,10 +649,13 @@ function RefinishPanelCivs:prompt_search()
         "", 
         function(query)
             if not query or query == "" then
-                if _G.refinish_log_event then _G.refinish_log_event("CIV DASH: User cleared search filter.") end
+                -- DETAIL: search tracking is only useful when debugging
+                -- the panel itself.
+                log('DETAIL', 'Search cleared.', 'SEARCH')
                 self:update_list("")
             else
-                if _G.refinish_log_event then _G.refinish_log_event("CIV DASH: User searched for -> '" .. tostring(query) .. "'") end
+                log('DETAIL', "Searched for '" .. tostring(query) .. "'.",
+                    'SEARCH')
                 self:update_list(query)
             end
         end

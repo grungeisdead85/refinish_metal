@@ -13,6 +13,20 @@ local RefinishPanelStatus = reqscript('refinish-panel-status').RefinishPanelStat
 local RefinishPanelInspect = reqscript('refinish-panel-inspect').RefinishPanelInspect
 local RefinishPanelHelp = reqscript('refinish-panel-help').RefinishPanelHelp
 local RefinishPanelCivs = reqscript('refinish-panel-civs').RefinishPanelCivs
+-- The module settings pages come ready built from here, as many as the
+-- registered modules need (see build_pages there).
+local panel_modules = reqscript('refinish-panel-modules')
+
+-- ---- WINDOW SIZE ----
+-- The HUD window, and the height of a left pane page within it. The
+-- window's border and inset take 2 rows at the top and 2 at the bottom
+-- (measured: a 55 row window draws 51 rows of body, the key bar on the
+-- last), and the left pane stops 2 short of the body's bottom for the
+-- key bar. The module settings pages are laid out to this height, so
+-- anything that changes the window's size or the pane's frame must
+-- change it too.
+local HUD_W, HUD_H = 160, 55
+local LEFT_PAGE_ROWS = HUD_H - 4 - 2
 
 -- Changed from ZScreenModal to ZScreen to prevent forced pausing
 RefinishMasterHUD = defclass(RefinishMasterHUD, gui.ZScreen)
@@ -41,12 +55,18 @@ function RefinishMasterHUD:init()
         if route == 'config' then l_page = 1
         elseif route == 'metals' then l_page = 2
         elseif route == 'civs' then l_page = 3
+        elseif route == 'modules' then l_page = 4
         elseif route == 'status' then c_page = 1
         elseif route == 'log' then c_page = 2
         elseif route == 'inspect' then c_page = 3
         elseif route == 'help' then c_page = 4
         end
     end
+
+    -- ---- MODULE SETTINGS PAGES ----
+    -- As many as the registered modules need at this pane's height,
+    -- never fewer than one, so the 'modules' route always has a page.
+    local module_pages = panel_modules.build_pages(self.THEME, LEFT_PAGE_ROWS)
 
     -- ==========================================
     -- ROUTER 1: LEFT PANE (Controls Configs/Log)
@@ -57,7 +77,11 @@ function RefinishMasterHUD:init()
         subviews = {
             RefinishPanelConfig{ theme = self.THEME },
             RefinishPanelMetals{ theme = self.THEME },
-            RefinishPanelCivs{ theme = self.THEME }
+            RefinishPanelCivs{ theme = self.THEME },
+            -- Every module's settings, drawn from the specs registered
+            -- with refinish-module-config, on as many pages as they
+            -- need. Last in the list, so the unpack adds them all.
+            table.unpack(module_pages)
         }
     }
 
@@ -80,7 +104,7 @@ function RefinishMasterHUD:init()
     -- ==========================================
     self:addviews{
         widgets.Window{
-            frame = {w = 160, h = 55, l = 3},
+            frame = {w = HUD_W, h = HUD_H, l = 3},
             frame_title = "REFINISH METAL",
             frame_style = gui.FRAME_MEDIUM,
             subviews = {
@@ -150,12 +174,67 @@ function RefinishMasterHUD:init()
             }
         }
     }
+
+    -- ---- THE HUD ON THE SECTION CLOCK ----
+    -- DFHack's own counters time the HUD only as a whole (print_timers,
+    -- ZScreen refinish/hud). MEASURED 2026-10-02: 10,267 ms in one
+    -- session, after the status pane's values were already worked out
+    -- once a second, so most of it is somewhere else. With the section
+    -- probe on, each pane's drawing and the HUD's input are laps of their
+    -- own; with it off, each costs one global read.
+    local function on_clock(view, name)
+        local real = view.render
+        view.render = function(v, dc)
+            local sc = _G.refinish_section_clock
+            if not sc then return real(v, dc) end
+            local t0 = sc.now()
+            real(v, dc)
+            sc.lap(name, t0)
+        end
+    end
+    on_clock(self.router_left, 'hud: left pane drawn')
+    on_clock(self.router_center, 'hud: right pane drawn')
+    local class_input = RefinishMasterHUD.onInput
+    self.onInput = function(s, keys)
+        local sc = _G.refinish_section_clock
+        if not sc then return class_input(s, keys) end
+        local t0 = sc.now()
+        local r = class_input(s, keys)
+        sc.lap('hud: input', t0)
+        return r
+    end
 end
 
 -- ==========================================
 -- KEY INPUT HANDLER
 -- ==========================================
+-- True when a view and every view above it are showing. A page the
+-- router has hidden is not.
+local function shown(view)
+    while view do
+        local vis = view.visible
+        if type(vis) == 'function' then vis = vis() end
+        if vis == false then return false end
+        view = view.parent_view
+    end
+    return true
+end
+
 function RefinishMasterHUD:onInput(keys)
+    -- ---- A FOCUSED TEXT FIELD GETS THE KEYS FIRST ----
+    -- The log's search field takes the keyboard while it is being typed
+    -- in, and its keys must reach it before the pane hotkeys below: n,
+    -- k, m and l are letters a search can hold, and Esc should leave
+    -- the field, not close the HUD. The field hands the keyboard back
+    -- on Enter or Esc. One left focused on a page no longer showing is
+    -- released, so the hotkeys cannot stay dead.
+    local cur = self.focus_group and self.focus_group.cur
+    if cur and cur.focus then
+        if shown(cur) then
+            return RefinishMasterHUD.super.onInput(self, keys)
+        end
+        cur:setFocus(false)
+    end
     if keys.CUSTOM_N then
         local curr = self.router_left:getSelected()
         self.router_left:setSelected(curr == 1 and #self.router_left.subviews or curr - 1)
@@ -190,6 +269,7 @@ function RefinishMasterHUD:routeToPage(route)
     if route == 'config' then l_page = 1
     elseif route == 'metals' then l_page = 2
     elseif route == 'civs' then l_page = 3
+    elseif route == 'modules' then l_page = 4
     elseif route == 'status' then c_page = 1
     elseif route == 'log' then c_page = 2
     elseif route == 'inspect' then c_page = 3

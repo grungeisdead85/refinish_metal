@@ -2,11 +2,12 @@
 -- ==========================================
 -- REFINISH METAL: AUTOSAVE CYCLE
 -- ==========================================
--- Two protocols:
---   HOTSAVE:  Clear RAM -> quicksave -> re-index RAM.
---             Items untouched. No JSON payload. Fastest.
---   AUTOSAVE: Wash items to JSON -> clear RAM -> quicksave -> full rebuild.
---             Legacy path for users who want the wash behaviour.
+-- One cycle, the hotsave: ledger snapshot -> clear RAM -> quicksave ->
+-- re-index RAM -> ledger remap. Items are never touched; they keep
+-- their materials and the remap moves any that shifted, by name.
+--
+-- The second protocol, AUTOSAVE (wash items to a JSON payload, clear,
+-- quicksave, full rebuild), was retired 2026-09-29 with the wash.
 --
 -- Timing data is written to _G.refinish_telemetry.last_save
 -- (the persistent telemetry sub-table). This is NOT nil'd at
@@ -16,10 +17,54 @@
 local utils = require('utils')
 
 -- ==========================================
--- PROTOCOL GATE
+-- LOG FUNNEL
 -- ==========================================
-local save_protocol = dfhack.persistent.getSiteData('refinish_config_save_protocol')
-if not save_protocol or save_protocol == "" then save_protocol = 'AUTOSAVE' end
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot, here HOTSAVE for the cycle's own
+-- lines or the gate that ended the run early. Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'AUTOSAVE'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
+-- ---- WHICH LINES POP ----
+-- The cycle summary is COMPLETE: a finished save is one of the few
+-- confirmations worth a line in Quiet. The cycle's start line is
+-- INFO, so Info brackets the cycle. Each phase's own line is DETAIL
+-- beneath the summary, which carries every phase's timing. A crash is
+-- FATAL: the cycle cannot finish and RAM is left cleared.
 
 local msg_setting = dfhack.persistent.getSiteData('refinish_config_msg')
 if not msg_setting or msg_setting == "" then msg_setting = 'GUIDED' end
@@ -70,8 +115,7 @@ local function ram_is_at_baseline()
 end
 
 if ram_is_at_baseline() then
-    print("Refinish Metal: Memory is already at baseline. Triggering standard quicksave.")
-    if _G.refinish_log_event then _G.refinish_log_event("AUTOSAVE: Memory at baseline. Standard quicksave.") end
+    log('INFO', 'Memory at baseline. Standard quicksave.', 'BASELINE')
     dfhack.run_command('quicksave')
     return
 end
@@ -90,30 +134,45 @@ end
 -- Reset the last_save sub-table for this cycle
 if _G.refinish_telemetry and _G.refinish_telemetry.last_save then
     local ls = _G.refinish_telemetry.last_save
-    ls.protocol = save_protocol
     ls.timestamp = os.date("%H:%M:%S")
-    ls.t_save = 0
     ls.t_clr_ent = 0; ls.t_clr_rxn = 0; ls.t_clr_mat = 0
     ls.t_engine = 0; ls.t_restore = 0; ls.t_active = 0
-    ls.items = 0; ls.buildings = 0; ls.constructions = 0
 end
 
 _G.refinish_autosave_in_progress = true
 
--- Pause the game if configured to do so
+-- ---- PAUSED FOR THE WHOLE CYCLE ----
+-- No game tick may run while RM's data is out of RAM: a LIQUID_MISC
+-- item of a module material resolves to magma past the end of the
+-- array (measured at load 2026-08-26; liquids misted in play
+-- 2026-09-29). So the cycle pauses whatever Pause on Save says, and
+-- the save watcher below holds the pause until RAM is back. Pause on
+-- Save decides only what happens after: No resumes a game that was
+-- running when the cycle began (resume_after_cycle, from the restore).
 local pause_setting = dfhack.persistent.getSiteData('refinish_config_pause')
-if pause_setting ~= 'NO' then
-    if not df.global.pause_state then
-        df.global.pause_state = true
-        print("Refinish Metal: Pausing to initiate save routine...")
-        if _G.refinish_log_event then _G.refinish_log_event("AUTOSAVE: Paused for save routine.") end
+local was_running = not df.global.pause_state
+if was_running then
+    df.global.pause_state = true
+    log('DETAIL', 'Paused for the save routine.', 'PAUSE')
+end
+
+-- Hands the pause back once RAM is restored, or once the tick fallback
+-- takes over. Runs once however it is reached.
+local resumed = false
+local function resume_after_cycle()
+    if resumed then return end
+    resumed = true
+    if pause_setting == 'NO' and was_running then
+        df.global.pause_state = false
+        log('DETAIL', 'Resumed after the save routine (Pause on Save: No).',
+            'PAUSE')
     end
 end
 
 -- ==========================================
 -- SHARED: PHYSICAL RAM CLEAR CHECK
 -- ==========================================
--- Used by both protocols to confirm RAM is fully evacuated
+-- Used by the cycle below to confirm RAM is fully evacuated
 -- before handing off to the engine save.
 -- ==========================================
 local function is_memory_physically_clear()
@@ -159,24 +218,58 @@ end
 
 -- ==============================================================
 -- ==============================================================
--- HOTSAVE PROTOCOL
+-- THE HOTSAVE CYCLE
 -- Clear RAM -> Quicksave -> Re-index RAM.
 -- Items on the map are never touched. No JSON payload written.
+--
+-- A do-block so it keeps its indentation: until 2026-09-29 this was
+-- the HOTSAVE branch of a protocol choice, with AUTOSAVE after it.
 -- ==============================================================
 -- ==============================================================
-if save_protocol == 'HOTSAVE' then
-    if _G.refinish_log_event then _G.refinish_log_event("AUTOSAVE (HOTSAVE): Protocol initiated.") end
-    print("Refinish Metal: Hotsave initiated. Clearing RAM...")
+do
+    log('INFO', 'Cycle initiated. Clearing RAM.', 'HOTSAVE')
+
+    -- ==========================================
+    -- LEDGER SNAPSHOT, BEFORE ANY CLEARING
+    -- ==========================================
+    -- Objects on the map carry the indices the array holds RIGHT NOW.
+    -- This records that layout so the remap after the rebuild can put
+    -- them back by name.
+    --
+    -- FIRST LINE OF THE PROTOCOL, and the position is the whole point.
+    -- The clear is strict LIFO, core RM before modules, so ANY later
+    -- placement snapshots a half demolished array. Measured: written
+    -- between the two clears it recorded 63 materials instead of 441,
+    -- having lost the 378 core RM entries AND slid every module index
+    -- down by that amount, then saved that over a correct ledger.
+    -- ==========================================
+    -- if_changed, as in refinish-shutdown's snapshot: kept only when the
+    -- arrays stand exactly as the last write found them.
+    pcall(function()
+        dfhack.script_environment('refinish-ledger').write({ if_changed = true })
+    end)
 
     local cycle_clock = os.clock()
 
     -- ==========================================
     -- HOTSAVE STEP 1: CLEAR RAM
     -- ==========================================
-    -- We call the three clear scripts directly, bypassing
-    -- refinish-shutdown entirely (shutdown calls refinish-save
-    -- first, which we explicitly do not want in hotsave mode).
+    -- We call the three clear scripts directly rather than going
+    -- through refinish-shutdown, which used to wash items first
+    -- (the AUTOSAVE protocol, retired 2026-09-29). Shutdown no
+    -- longer washes, so the two paths now run the same clears.
     -- ==========================================
+
+    -- RM's services stop first, as in refinish-shutdown (refinish_steel
+    -- .lua, RM'S SERVICES FOLLOW THE DATA): nothing of theirs polls
+    -- through the save, and the stockpile windows hand their twins'
+    -- flags back while the twins still exist. The modules stop in
+    -- clear_module_assets, below.
+    pcall(function()
+        local svc = _G.refinish_services
+        if svc and svc.stop then svc.stop() end
+    end)
+
     local t = os.clock()
     dfhack.run_script('refinish-clear-entity')
     local t_clr_ent = os.clock() - t; lset('t_clr_ent', t_clr_ent); t = os.clock()
@@ -208,41 +301,76 @@ if save_protocol == 'HOTSAVE' then
 
     local t_clr_mat = os.clock() - t; lset('t_clr_mat', t_clr_mat)
 
-    if _G.refinish_log_event then
-        _G.refinish_log_event(string.format("AUTOSAVE (HOTSAVE): RAM cleared (Ent:%.3f | Rxn:%.3f | Mat:%.3f).", t_clr_ent, t_clr_rxn, t_clr_mat))
-    end
+    log('DETAIL', string.format('RAM cleared (Ent:%.3f | Rxn:%.3f | Mat:%.3f).',
+        t_clr_ent, t_clr_rxn, t_clr_mat), 'HOTSAVE')
 
     -- ==========================================
     -- HOTSAVE STEP 2: WAIT FOR PHYSICAL CONFIRMATION
-    -- Then fire the engine save and re-index on the next tick.
+    -- Then fire the engine save and re-index the moment it is written.
     -- ==========================================
     local function hotsave_trigger()
         local ok, err = pcall(function()
-            print("Refinish Metal: RAM confirmed clear. Executing engine quicksave...")
-            if _G.refinish_log_event then _G.refinish_log_event("AUTOSAVE (HOTSAVE): RAM confirmed clear. Initiating quicksave.") end
+            log('DETAIL', 'RAM confirmed clear. Initiating quicksave.', 'HOTSAVE')
 
             local function do_save_and_restore()
                 local engine_start = os.clock()
                 dfhack.run_command('quicksave')
 
-                -- Re-index on the very next tick after quicksave returns
-                dfhack.timeout(1, 'ticks', function()
+                -- ==========================================
+                -- WHEN THE SAVE IS WRITTEN: THE REQUEST CLEARS
+                -- ==========================================
+                -- Restoring while the save is still being written collides
+                -- with it and corrupts the save: an early version restored
+                -- straight after the quicksave call and did exactly that.
+                -- For years no hook was known, so the first game tick after
+                -- the request stood in for one, and that tick simulated with
+                -- every module material out of the array (magma liquids).
+                --
+                -- MEASURED 2026-09-29/30 with refinish-save-probe.lua, four
+                -- runs, game paused: quicksave raises
+                -- plotinfo.main.autosave_request, its timer counts down one
+                -- per frame, the saver works through its stages one per
+                -- frame (DF's main loop blocking seconds inside some), and
+                -- the request clears as the saver ends, with no tick run.
+                -- The last run watched the save folders on disk (1,824
+                -- files): world.sav and DFHack's .dat files were all written
+                -- before the request cleared, and nothing changed in the
+                -- 1,500 frames after. The request clearing is the hook.
+                --
+                -- restore() runs on that frame, before any tick. If the
+                -- request is never seen rising (the quicksave failed) or
+                -- never clears, the tick rule takes over for that cycle,
+                -- with a warning: the old behaviour, window and all.
+                local function restore()
                     local ok2, err2 = pcall(function()
                         local t_engine = os.clock() - engine_start
                         lset('t_engine', t_engine)
 
-                        print("Refinish Metal: Quicksave complete. Restoring RAM...")
-                        if _G.refinish_log_event then _G.refinish_log_event(string.format("AUTOSAVE (HOTSAVE): Quicksave complete (%.3fs). Restoring RAM.", t_engine)) end
+                        log('DETAIL', string.format(
+                            'Quicksave complete (%.3fs). Restoring RAM.',
+                            t_engine), 'HOTSAVE')
 
                         -- ==========================================
                         -- HOTSAVE STEP 3: RESTORE RAM
                         -- ==========================================
-                        -- Run the full index chain. Skip refinish-load:
-                        -- items already carry their mat_index on the
-                        -- objects and need no restoration.
+                        -- Run the full index chain. No payload restore:
+                        -- items carry their own mat_index, and
+                        -- refinish-load is now only startup's one-time
+                        -- migration of a save the retired wash wrote.
                         -- ==========================================
                         local restore_start = os.clock()
                         local t2 = restore_start
+
+                        -- ---- WHAT THE REBUILD MAKES, MARKED ----
+                        -- Read before the module pipeline below starts any
+                        -- module: anything numbered from here on is made
+                        -- by the rebuild, on the rebuilt indices, and the
+                        -- remap leaves it as it is (refinish-ledger.lua,
+                        -- MADE THIS LOAD). Added 2026-10-12, as startup's.
+                        local made_from = nil
+                        pcall(function()
+                            made_from = dfhack.script_environment('refinish-ledger').next_ids()
+                        end)
 
                         -- Ghost job sweep
                         local orphaned_jobs_fixed = 0
@@ -251,7 +379,12 @@ if save_protocol == 'HOTSAVE' then
                                 if job.job_type == df.job_type.CustomReaction then
                                     local r_name = tostring(job.reaction_name)
                                     if string.find(r_name, "^REFINISH_STEEL_RXN_LUA_GRIND_") then
-                                        local base_name = string.match(r_name, "^(REFINISH_STEEL_RXN_LUA_GRIND_[%a]+)")
+                                        -- A finished-metal grinder's ghost is cut at
+                                        -- the finish's id, keeping the base's grinder
+                                        -- (refinish-startup.lua, STEP 1, says why).
+                                        local base_name = string.find(r_name, "^REFINISH_STEEL_RXN_LUA_GRIND_FIN_")
+                                            and (string.match(r_name, "^(.-)_REFINISH_STEEL_MAT_") or r_name)
+                                            or string.match(r_name, "^(REFINISH_STEEL_RXN_LUA_GRIND_[%a]+)")
                                         if base_name and r_name ~= base_name then
                                             job.reaction_name = base_name
                                             orphaned_jobs_fixed = orphaned_jobs_fixed + 1
@@ -260,8 +393,10 @@ if save_protocol == 'HOTSAVE' then
                                 end
                             end
                         end)
-                        if orphaned_jobs_fixed > 0 and _G.refinish_log_event then
-                            _G.refinish_log_event(string.format("AUTOSAVE (HOTSAVE): Rescued %d orphaned reactions.", orphaned_jobs_fixed))
+                        if orphaned_jobs_fixed > 0 then
+                            log('DETAIL', string.format(
+                                'Rescued %d orphaned reactions.',
+                                orphaned_jobs_fixed), 'HOTSAVE')
                         end
                         local r_sweep = os.clock() - t2; t2 = os.clock()
 
@@ -310,6 +445,31 @@ if save_protocol == 'HOTSAVE' then
                         dfhack.run_script('refinish-index-entity')
                         local r_ent = os.clock() - t2
 
+                        -- ---- LEDGER REMAP ----
+                        -- Same position refinish-startup uses, after
+                        -- material indices are final. Moves every
+                        -- object from the index its material held
+                        -- before the clear to the index it holds now,
+                        -- matched by name.
+                        --
+                        -- Without this the restore is only correct
+                        -- when the rebuilt array is identical to the
+                        -- one that was cleared, which stops being true
+                        -- the moment anything injects outside startup.
+                        pcall(function()
+                            dfhack.script_environment('refinish-ledger').remap({ since = made_from })
+                        end)
+
+                        -- ---- RM'S SERVICES START ----
+                        -- Last, as at the end of refinish-startup: every
+                        -- asset in RAM, the modules started and the
+                        -- ledger remapped (refinish_steel.lua, RM'S
+                        -- SERVICES FOLLOW THE DATA).
+                        pcall(function()
+                            local svc = _G.refinish_services
+                            if svc and svc.start then svc.start() end
+                        end)
+
                         local t_restore = os.clock() - restore_start
                         lset('t_restore', t_restore)
 
@@ -323,63 +483,75 @@ if save_protocol == 'HOTSAVE' then
                         lset('t_active', active_time)
 
                         -- Log the full cycle as a single structured entry
-                        if _G.refinish_log_event then
-                            _G.refinish_log_event(string.format(
-                                "AUTOSAVE (HOTSAVE): Cycle complete (%.3fs); Clear:%.3f | Engine:%.3f | Restore:%.3f",
-                                active_time, clear_total, t_engine, t_restore
-                            ))
-                        end
+                        log('COMPLETE', string.format(
+                            'Cycle complete (%.3fs); Clear:%.3f | Engine:%.3f | Restore:%.3f',
+                            active_time, clear_total, t_engine, t_restore),
+                            'HOTSAVE')
 
-                        -- User-facing output
-                        if msg_setting == 'DEBUG' then
-                            local report = string.format(
-                                "Hotsave Cycle Complete (%.3fs)\n\n" ..
-                                "--- RAM CLEAR (%.3fs) ---\n" ..
-                                "Clear Entities:   %.3fs\n" ..
-                                "Clear Reactions:  %.3fs\n" ..
-                                "Clear Materials:  %.3fs\n\n" ..
-                                "--- ENGINE SAVE ---\n" ..
-                                "Quicksave:        %.3fs\n\n" ..
-                                "--- RAM RESTORE (%.3fs) ---\n" ..
-                                "Ghost Sweep:      %.3fs\n" ..
-                                "Module Pipeline:  %.3fs\n" ..
-                                "Blueprint Scan:   %.3fs\n" ..
-                                "Index Materials:  %.3fs\n" ..
-                                "Index Reactions:  %.3fs\n" ..
-                                "Module Perms:     %.3fs\n" ..
-                                "Index Entities:   %.3fs\n" ..
-                                "Orphans Fixed: %d",
-                                active_time,
-                                clear_total, t_clr_ent, t_clr_rxn, t_clr_mat,
-                                t_engine,
-                                t_restore, r_sweep, r_mod, r_scan, r_mat, r_rxn, r_modperm, r_ent,
-                                orphaned_jobs_fixed
-                            )
-                            local RefinishPrompt = reqscript('refinish-prompt').RefinishPrompt
-                            RefinishPrompt{
-                                frame_h = 26,
-                                frame_w = 55,
-                                text = report,
-                                on_ok = function() end
-                            }:show()
-                        elseif msg_setting == 'GUIDED' then
-                            local RefinishPrompt = reqscript('refinish-prompt').RefinishPrompt
-                            RefinishPrompt{
-                                frame_h = 10,
-                                text = string.format("Hotsave complete (%.2fs).", active_time),
-                                on_ok = function() end
-                            }:show()
-                        elseif msg_setting == 'PASSIVE' then
+                        -- ---- NO COMPLETION PROMPT (removed 2026-09-30) ----
+                        -- A prompt is a modal screen (gui.ZScreenModal), which
+                        -- holds the game paused while it is up: shown just
+                        -- before resume_after_cycle(), it overrode the resume
+                        -- that Pause on Save: No asks for. The status panel's
+                        -- LAST SAVE CYCLE already carries these figures, so
+                        -- the report became a DETAIL line, logged in every
+                        -- mode, and the only thing left on screen is the
+                        -- announcement, which does not pause. Silent shows
+                        -- nothing.
+                        log('DETAIL', string.format('Restore breakdown: sweep'
+                            .. ' %.3f | modules %.3f | scan %.3f | materials'
+                            .. ' %.3f | reactions %.3f | module perms %.3f |'
+                            .. ' entities %.3f | orphans fixed %d', r_sweep,
+                            r_mod, r_scan, r_mat, r_rxn, r_modperm, r_ent,
+                            orphaned_jobs_fixed), 'HOTSAVE')
+                        if msg_setting ~= 'SILENT' then
                             local THEME = reqscript('refinish-theme').get_current_theme()
-                            dfhack.gui.showAnnouncement(string.format('Refinish Metal: Hotsave complete (%.2fs).', active_time), THEME.PRI, true)
+                            dfhack.gui.showAnnouncement(string.format(
+                                'Refinish Metal: Hotsave complete (%.2fs).',
+                                active_time), THEME.PRI, true)
                         end
                     end)
 
                     if not ok2 then
-                        print("REFINISH FATAL RESTORE ERROR: " .. tostring(err2))
-                        if _G.refinish_log_event then _G.refinish_log_event("FATAL RESTORE CRASH: " .. tostring(err2)) end
+                        log('FATAL', 'Restore crashed: ' .. tostring(err2),
+                            'HOTSAVE')
                     end
-                end)
+                    -- Whatever happened above, the pause is the player's again.
+                    resume_after_cycle()
+                end
+
+                -- ---- THE SAVE WATCHER ----
+                -- Every frame: note the request rising, restore on the frame
+                -- it clears, and hold the pause meanwhile, so a player's
+                -- unpause mid-save cannot run a tick. The limits are frames:
+                -- the request rose within a frame of the quicksave in every
+                -- run, and the saver took about 56.
+                local SEEN_LIMIT, UP_LIMIT = 600, 36000
+                local frames, seen_up = 0, false
+                local function wait_for_save()
+                    frames = frames + 1
+                    local up = false
+                    pcall(function() up = df.global.plotinfo.main.autosave_request end)
+                    if up then seen_up = true end
+                    if seen_up and not up then
+                        restore()
+                        return
+                    end
+                    if (not seen_up and frames >= SEEN_LIMIT) or frames >= UP_LIMIT then
+                        -- WARNING: the tick rule, and its window, are back for
+                        -- this one cycle.
+                        log('WARNING', string.format('The save request %s after'
+                            .. ' %d frames; restoring on the next game tick'
+                            .. ' instead.', seen_up and 'never cleared'
+                            or 'was never seen', frames), 'HOTSAVE')
+                        resume_after_cycle()
+                        dfhack.timeout(1, 'ticks', restore)
+                        return
+                    end
+                    if not df.global.pause_state then df.global.pause_state = true end
+                    dfhack.timeout(1, 'frames', wait_for_save)
+                end
+                dfhack.timeout(1, 'frames', wait_for_save)
             end
 
             -- Pre-save prompt for DEBUG only. Guided just proceeds.
@@ -387,7 +559,7 @@ if save_protocol == 'HOTSAVE' then
                 local RefinishPrompt = reqscript('refinish-prompt').RefinishPrompt
                 local THEME = reqscript('refinish-theme').get_current_theme()
                 RefinishPrompt{
-                    text = "RAM cleared. Press ENTER to quicksave. Pipeline will restore on unpause.",
+                    text = "RAM cleared. Press ENTER to quicksave. RAM comes back the moment the save is written.",
                     text_pen = THEME.PRI,
                     on_ok = function() do_save_and_restore() end
                 }:show()
@@ -397,8 +569,8 @@ if save_protocol == 'HOTSAVE' then
         end)
 
         if not ok then
-            print("REFINISH FATAL HOTSAVE ERROR: " .. tostring(err))
-            if _G.refinish_log_event then _G.refinish_log_event("FATAL HOTSAVE CRASH: " .. tostring(err)) end
+            log('FATAL', 'Hotsave crashed: ' .. tostring(err), 'HOTSAVE')
+            resume_after_cycle()
         end
     end
 
@@ -412,164 +584,4 @@ if save_protocol == 'HOTSAVE' then
     end
 
     wait_for_clear()
-    return  -- Explicit return so the autosave protocol block below doesn't execute
 end
-
-
--- ==============================================================
--- ==============================================================
--- AUTOSAVE PROTOCOL (LEGACY)
--- Full cycle: wash items to JSON, clear RAM, quicksave, rebuild.
--- ==============================================================
--- ==============================================================
-if _G.refinish_log_event then _G.refinish_log_event("AUTOSAVE (AUTOSAVE): Protocol initiated. Full save/wash cycle.") end
-print("Refinish Metal: Washing items and clearing RAM...")
-
--- refinish-shutdown writes its per-step timings into
--- _G.refinish_telemetry.last_save (t_save, t_clr_ent, etc.)
-dfhack.run_script('refinish-shutdown', 'SILENT')
-
-local function trigger_save_and_rebuild()
-    print("Refinish Metal: Save initiated. Mod data will be restored when you UNPAUSE.")
-    if _G.refinish_log_event then _G.refinish_log_event("AUTOSAVE (AUTOSAVE): Initiating quicksave...") end
-
-    local engine_start = os.clock()
-    dfhack.run_command('quicksave')
-
-    dfhack.timeout(1, 'ticks', function()
-        local ok, fatal_err = pcall(function()
-            local t_engine = os.clock() - engine_start
-            lset('t_engine', t_engine)
-
-            print("Refinish Metal: Quicksave complete. Rebuilding RAM...")
-            if _G.refinish_log_event then _G.refinish_log_event(string.format("AUTOSAVE (AUTOSAVE): Quicksave complete (%.3fs). Initiating startup...", t_engine)) end
-
-            -- refinish-startup writes its per-step timings into
-            -- _G.refinish_telemetry.startup (which we also read below)
-            local restore_start = os.clock()
-            local load_ok, load_err = pcall(function() dfhack.run_script('refinish-startup', 'SILENT', 'NOPROMPT') end)
-            if not load_ok then
-                print("Refinish Metal Warning: " .. tostring(load_err))
-                if _G.refinish_log_event then _G.refinish_log_event("AUTOSAVE ERROR: Startup failed -> " .. tostring(load_err)) end
-            end
-            local t_restore = os.clock() - restore_start
-            lset('t_restore', t_restore)
-
-            _G.refinish_autosave_in_progress = false
-
-            -- ==========================================
-            -- AUTOSAVE TELEMETRY REPORT
-            -- ==========================================
-            -- Pull shutdown timings from last_save (written by shutdown)
-            -- and startup timings from startup (written by startup).
-            -- ==========================================
-            local ls = _G.refinish_telemetry and _G.refinish_telemetry.last_save
-            local st = _G.refinish_telemetry and _G.refinish_telemetry.startup
-
-            local unload_total = ls and (ls.t_save + ls.t_clr_ent + ls.t_clr_rxn + ls.t_clr_mat) or 0
-            local active_time = unload_total + t_engine + t_restore
-            lset('t_active', active_time)
-
-            -- Grab payload counts from refinish-save (if it stored them)
-            local saved_items = ls and ls.items or 0
-            local saved_bldgs = ls and ls.buildings or 0
-            local saved_cons  = ls and ls.constructions or 0
-
-            -- Log the full cycle as a single structured entry
-            if _G.refinish_log_event then
-                _G.refinish_log_event(string.format(
-                    "AUTOSAVE (AUTOSAVE): Cycle complete (%.3fs); Unload:%.3f | Engine:%.3f | Restore:%.3f | Items:%d",
-                    active_time, unload_total, t_engine, t_restore, saved_items
-                ))
-            end
-
-            -- User-facing output
-            if msg_setting == 'DEBUG' then
-                -- Pull per-step restore timings from telemetry.startup
-                -- (written by refinish-startup via tset() calls)
-                local st = _G.refinish_telemetry and _G.refinish_telemetry.startup
-                local report = string.format(
-                    "Autosave Cycle Complete (%.3fs)\n\n" ..
-                    "--- DATA SECURED ---\n" ..
-                    "Items: %d  |  Buildings: %d  |  Constructions: %d\n\n" ..
-                    "--- UNLOAD (%.3fs) ---\n" ..
-                    "Save Payload:     %.3fs\n" ..
-                    "Clear Entities:   %.3fs\n" ..
-                    "Clear Reactions:  %.3fs\n" ..
-                    "Clear Materials:  %.3fs\n\n" ..
-                    "--- ENGINE SAVE ---\n" ..
-                    "Quicksave:        %.3fs\n\n" ..
-                    "--- RESTORE (%.3fs) ---\n" ..
-                    "Ghost Sweep:      %.3fs\n" ..
-                    "Module Pipeline:  %.3fs\n" ..
-                    "Blueprint Scan:   %.3fs\n" ..
-                    "Index Materials:  %.3fs\n" ..
-                    "Index Reactions:  %.3fs\n" ..
-                    "Index Entities:   %.3fs\n" ..
-                    "Restore Payload:  %.3fs",
-                    active_time,
-                    saved_items, saved_bldgs, saved_cons,
-                    unload_total, ls and ls.t_save or 0, ls and ls.t_clr_ent or 0, ls and ls.t_clr_rxn or 0, ls and ls.t_clr_mat or 0,
-                    t_engine,
-                    t_restore,
-                    st and st.t_sweep or 0, st and st.t_modules or 0, st and st.t_scan or 0,
-                    st and st.t_idx_mat or 0, st and st.t_idx_rxn or 0, st and st.t_idx_ent or 0,
-                    st and st.t_load or 0
-                )
-                local RefinishPrompt = reqscript('refinish-prompt').RefinishPrompt
-                RefinishPrompt{
-                    frame_h = 28,
-                    frame_w = 55,
-                    text = report,
-                    on_ok = function() end
-                }:show()
-            elseif msg_setting == 'GUIDED' then
-                local RefinishPrompt = reqscript('refinish-prompt').RefinishPrompt
-                RefinishPrompt{
-                    frame_h = 10,
-                    text = string.format("Autosave complete (%.2fs). %d objects secured.", active_time, saved_items + saved_bldgs + saved_cons),
-                    on_ok = function() end
-                }:show()
-            elseif msg_setting == 'PASSIVE' then
-                local THEME = reqscript('refinish-theme').get_current_theme()
-                dfhack.gui.showAnnouncement(string.format('Refinish Metal: Autosave complete (%.2fs).', active_time), THEME.PRI, true)
-            end
-        end)
-
-        if not ok then
-            print("REFINISH FATAL UI ERROR: " .. tostring(fatal_err))
-            if _G.refinish_log_event then _G.refinish_log_event("FATAL UI CRASH: " .. tostring(fatal_err)) end
-        end
-    end)
-end
-
-local function wait_for_shutdown()
-    if not is_memory_physically_clear() then
-        dfhack.timeout(10, 'frames', wait_for_shutdown)
-    else
-        local ok, err = pcall(function()
-            print("Refinish Metal: RAM confirmed clear. Triggering quicksave...")
-            if _G.refinish_log_event then _G.refinish_log_event("AUTOSAVE (AUTOSAVE): RAM confirmed clear.") end
-
-            -- Pre-save prompt for DEBUG only
-            if msg_setting == 'DEBUG' then
-                local RefinishPrompt = reqscript('refinish-prompt').RefinishPrompt
-                local THEME = reqscript('refinish-theme').get_current_theme()
-                RefinishPrompt{
-                    text = "Shutdown complete. Press ENTER to quicksave. Pipeline will restore on unpause.",
-                    text_pen = THEME.PRI,
-                    on_ok = function() trigger_save_and_rebuild() end
-                }:show()
-            else
-                trigger_save_and_rebuild()
-            end
-        end)
-
-        if not ok then
-            print("REFINISH FATAL SHUTDOWN ERROR: " .. tostring(err))
-            if _G.refinish_log_event then _G.refinish_log_event("FATAL SHUTDOWN CRASH: " .. tostring(err)) end
-        end
-    end
-end
-
-wait_for_shutdown()

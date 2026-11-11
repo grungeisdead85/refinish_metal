@@ -28,6 +28,49 @@
 
 local types = reqscript('refinish-module-types')
 
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the material class a line is
+-- about. Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'CLONE_EVAL'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
 
 -- ==========================================
 -- SCORE A SINGLE CANDIDATE
@@ -178,9 +221,8 @@ function evaluate(classes_needed)
             eval_sig = types.CLONE_SIGNATURES["STONE"]
             if not eval_sig then
                 -- No stone signature either - skip RAW
-                if _G.refinish_log_event then
-                    _G.refinish_log_event("CLONE EVAL: RAW class has no fallback signature. Skipped.")
-                end
+                log('WARNING', 'RAW class has no fallback signature. Skipped.',
+                    'RAW')
                 goto continue
             end
         end
@@ -195,33 +237,23 @@ function evaluate(classes_needed)
             local ceramic_sig = types.CLONE_SIGNATURES["CERAMIC"]
             if ceramic_sig then
                 best, score = evaluate_class("GLASS(->CERAMIC)", ceramic_sig)
-                if best and _G.refinish_log_event then
-                    _G.refinish_log_event(string.format(
-                        "CLONE EVAL: Class [GLASS] no native donor. Falling back to CERAMIC donor [%s] (score %d).",
-                        best.id, score
-                    ))
+                if best then
+                    log('DETAIL', string.format('No native donor. Falling back to'
+                        .. ' CERAMIC donor [%s] (score %d).', best.id, score),
+                        'GLASS')
                 end
             end
         end
 
         if best then
             cache[class_name] = best
-            if _G.refinish_log_event then
-                _G.refinish_log_event(string.format(
-                    "CLONE EVAL: Class [%s] -> donor [%s] (score %d).",
-                    class_name, best.id, score
-                ))
-            end
+            log('DETAIL', string.format('Donor [%s] (score %d).', best.id,
+                score), class_name)
         else
             -- No candidate found for this class. This is not fatal -
             -- it just means any module materials of this class will
             -- fail at injection time with a clear error.
-            if _G.refinish_log_event then
-                _G.refinish_log_event(string.format(
-                    "CLONE EVAL WARNING: No valid donor found for class [%s].",
-                    class_name
-                ))
-            end
+            log('WARNING', 'No valid donor found for this class.', class_name)
         end
 
         ::continue::
@@ -230,9 +262,7 @@ function evaluate(classes_needed)
     local count = 0
     for _ in pairs(cache) do count = count + 1 end
 
-    if _G.refinish_log_event then
-        _G.refinish_log_event(string.format("CLONE EVAL: Complete. %d classes resolved.", count))
-    end
+    log('DETAIL', string.format('Complete. %d classes resolved.', count))
 
     return cache
 end

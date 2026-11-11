@@ -57,6 +57,54 @@
 
 local types = reqscript('refinish-module-types')
 
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the module or civ a line is about.
+-- Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- Console prints only where they answer a typed command. A print only
+-- appears as the direct answer to a command typed into the DFHack
+-- console, and nowhere else. The one place that holds here is the
+-- count at the bottom, which prints only when this file is typed as a
+-- command rather than loaded as a module.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'MODULE_PERMITS'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
+-- Per-reaction and per-civ trace lines. Spam scale, so they are not
+-- sent at all unless this is true; when they are, they go out as
+-- DETAIL.
 local VERBOSE_DEBUG = false
 
 
@@ -252,9 +300,7 @@ end
 function evaluate_and_inject()
     local registry = _G.refinish_module_registry
     if not registry or not next(registry) then
-        if _G.refinish_log_event then
-            _G.refinish_log_event("MODULE PERMISSIONS: No modules registered. Skipping.")
-        end
+        log('DETAIL', 'No modules registered. Skipping.')
         return 0
     end
 
@@ -262,10 +308,8 @@ function evaluate_and_inject()
     if not civ_tech then
         -- civ_tech should exist by the time we run (after boot).
         -- If it doesn't, something is wrong upstream. Fail loud.
-        print("Refinish Metal: MODULE PERMISSIONS ERROR: _G.refinish_civ_tech is nil. Boot may not have run. Permissions skipped.")
-        if _G.refinish_log_event then
-            _G.refinish_log_event("MODULE PERMISSIONS: CRITICAL - _G.refinish_civ_tech is nil. Skipping all permissions.")
-        end
+        log('ERROR', '_G.refinish_civ_tech is nil, so no module permissions'
+            .. ' were granted. Boot may not have run.')
         return 0
     end
 
@@ -281,9 +325,26 @@ function evaluate_and_inject()
     -- core RM reactions are cleared and re-injected), so we
     -- must resolve them fresh each time.
     -- ==========================================
+    --
+    -- ---- POSITIONS FROM THE REACTION INDEX ----
+    -- Only module reaction codes are looked up below, 641 in region4,
+    -- and refinish-resolve keeps every reaction's position by code,
+    -- brought up to date at the end of Step 5, before this runs. Its
+    -- answer is checked against the code at that position.
+    -- MEASURED 2026-10-01 (the load clock, region4): this walked all
+    -- 103,534 reactions to answer them. The index keeps a code's first
+    -- position and the walk kept its last. They are the same place: a
+    -- module code is its prefix and a key the validator keeps unique,
+    -- injected once a data cycle, and no raw file of RM's defines a
+    -- reaction (confirmed 2026-10-01: its one raw file holds only
+    -- inorganics), so another mod's raws would have to use a module's
+    -- prefix. Without the index, the walk runs as before.
+    local find_rx = _G.refinish_find_reaction
     local rxn_code_to_index = {}
-    for i, rxn in ipairs(reactions_array) do
-        rxn_code_to_index[rxn.code] = i
+    if not find_rx then
+        for i, rxn in ipairs(reactions_array) do
+            rxn_code_to_index[rxn.code] = i
+        end
     end
 
     -- ==========================================
@@ -336,25 +397,29 @@ function evaluate_and_inject()
     local first_raw_for_code  = {}
     local reported_collision  = {}
 
+    -- ---- THE CIVILIZATIONS, LISTED ONCE ----
+    -- The per-reaction loop below visits only civilizations with a raw,
+    -- in the queue's order, and used to find them by reading the type of
+    -- every historical entity in the world again for each of the 641
+    -- module reactions. MEASURED 2026-10-01 (the load clock, region4):
+    -- this evaluator took 379 ms, about 0.6 ms a reaction. They are the
+    -- same civilizations this loop finds, so it lists them here once,
+    -- with their raw's code, which does not change during the pass.
+    local civ_list = {}
     for _, civ in ipairs(processing_queue) do
         if civ.type == df.historical_entity_type.Civilization and civ.entity_raw then
             local code = civ.entity_raw.code
+            civ_list[#civ_list + 1] = { civ = civ, raw_code = code }
             local seen = first_raw_for_code[code]
 
             if seen == nil then
                 first_raw_for_code[code] = civ.entity_raw
             elseif seen ~= civ.entity_raw and not reported_collision[code] then
                 reported_collision[code] = true
-                local msg = string.format(
-                    "MODULE PERMISSIONS: WARNING - entity code [%s] is declared by "
-                    .. "more than one entity raw. Only the first is permitted; the "
-                    .. "others are skipped. Check your raws for a duplicate [ENTITY:%s].",
-                    code, code
-                )
-                print(msg)
-                if _G.refinish_log_event then
-                    _G.refinish_log_event(msg)
-                end
+                log('WARNING', string.format('Entity code declared by more than'
+                    .. ' one entity raw. Only the first is permitted; the'
+                    .. ' others are skipped. Check your raws for a duplicate'
+                    .. ' [ENTITY:%s].', code), code)
             end
         end
     end
@@ -407,7 +472,13 @@ function evaluate_and_inject()
 
         for _, def in ipairs(module.reactions) do
             local full_code = prefix .. "RXN_" .. def.key
-            local rxn_index = rxn_code_to_index[full_code]
+            local rxn_index
+            if find_rx then
+                local _, pos = find_rx(full_code)
+                rxn_index = pos
+            else
+                rxn_index = rxn_code_to_index[full_code]
+            end
 
             -- If the reaction wasn't found in the live array, it
             -- failed injection earlier. Skip silently.
@@ -431,11 +502,9 @@ function evaluate_and_inject()
             -- through permits. Only accessible if fortress_mode is
             -- true on the reaction (the purple-gold pattern).
             if perm_mode == "NONE" then
-                if VERBOSE_DEBUG and _G.refinish_log_event then
-                    _G.refinish_log_event(string.format(
-                        "MODULE PERMISSIONS: NONE mode [%s] - no permits pushed.",
-                        full_code
-                    ))
+                if VERBOSE_DEBUG then
+                    log('DETAIL', string.format('NONE mode [%s]: no permits'
+                        .. ' pushed.', full_code), 'NONE_MODE')
                 end
                 goto next_reaction
             end
@@ -471,11 +540,12 @@ function evaluate_and_inject()
             -- unique raws, so this brings the two into agreement.
             local scanned_raws = {}
 
-            for _, civ in ipairs(processing_queue) do
-                if civ.type ~= df.historical_entity_type.Civilization then goto next_civ end
-                if not civ.entity_raw then goto next_civ end
-
-                local raw_code = civ.entity_raw.code
+            -- The civilizations with a raw, in the queue's order (THE
+            -- CIVILIZATIONS, LISTED ONCE): what the two skips that stood
+            -- here let through.
+            for _, entry in ipairs(civ_list) do
+                local civ = entry.civ
+                local raw_code = entry.raw_code
 
                 if scanned_raws[raw_code] then goto next_civ end
                 scanned_raws[raw_code] = true
@@ -491,12 +561,9 @@ function evaluate_and_inject()
                     if entity_code_filter then
                         -- Explicit target failed: log the rejection
                         mod_rejected = mod_rejected + 1
-                        if _G.refinish_log_event then
-                            _G.refinish_log_event(string.format(
-                                "MODULE PERMISSIONS: REJECTED [%s] for [%s] - lacks %s capability.",
-                                full_code, raw_code, building_name
-                            ))
-                        end
+                        log('WARNING', string.format('Rejected [%s]: lacks %s'
+                            .. ' capability.', full_code, building_name),
+                            raw_code)
                     end
                     goto next_civ
                 end
@@ -528,12 +595,9 @@ function evaluate_and_inject()
                     if entity_code_filter then
                         -- Explicit target failed: log the rejection
                         mod_rejected = mod_rejected + 1
-                        if _G.refinish_log_event then
-                            _G.refinish_log_event(string.format(
-                                "MODULE PERMISSIONS: REJECTED [%s] for [%s] - does not know metal [%s].",
-                                full_code, raw_code, tostring(missing_metal)
-                            ))
-                        end
+                        log('WARNING', string.format('Rejected [%s]: does not'
+                            .. ' know metal [%s].', full_code,
+                            tostring(missing_metal)), raw_code)
                     end
                     goto next_civ
                 end
@@ -568,15 +632,13 @@ function evaluate_and_inject()
 
                     local is_player = player_civ and civ.id == player_civ.id
 
-                    if VERBOSE_DEBUG and _G.refinish_log_event then
-                        _G.refinish_log_event(string.format(
-                            "MODULE PERMISSIONS: DEBUG [%s] for [%s] - products=%d, tech=%s, is_player=%s, cache=%s",
-                            full_code, raw_code,
-                            count_table(product_metals),
-                            tostring(tech ~= nil),
+                    if VERBOSE_DEBUG then
+                        log('DETAIL', string.format('[%s] products=%d, tech=%s,'
+                            .. ' is_player=%s, cache=%s', full_code,
+                            count_table(product_metals), tostring(tech ~= nil),
                             tostring(is_player),
-                            tostring(_G.refinish_known_metals_cache ~= nil)
-                        ))
+                            tostring(_G.refinish_known_metals_cache ~= nil)),
+                            raw_code)
                     end
 
                     if tech and next(product_metals) then
@@ -602,12 +664,8 @@ function evaluate_and_inject()
         total_injected = total_injected + mod_injected
         total_rejected = total_rejected + mod_rejected
 
-        if _G.refinish_log_event then
-            _G.refinish_log_event(string.format(
-                "MODULE PERMISSIONS: [%s] - %d permissions injected, %d rejected.",
-                module.name, mod_injected, mod_rejected
-            ))
-        end
+        log('DETAIL', string.format('%d permissions injected, %d rejected.',
+            mod_injected, mod_rejected), module.name)
 
         ::next_module::
     end
@@ -631,10 +689,13 @@ function evaluate_and_inject()
     --
     -- Reaction permissions must be cleared before a save because they
     -- hold indexes into the reactions array, and that array is torn
-    -- down every data cycle. Building permissions hold indexes into
-    -- world.raws.buildings, which RM never touches. Those indexes are
-    -- fixed at worldgen and outlive every wash, so the reference can
-    -- never dangle.
+    -- down every data cycle. Building permissions hold building def
+    -- IDS, not vector positions (measured: a placed building's
+    -- custom_type resolves against def.id). Raws ids are frozen by
+    -- the save's cached parse; injected ids are pinned per code by
+    -- the reservation ledger in refinish-module-inject-building. A
+    -- grant therefore re-resolves to the same building every session
+    -- and can never dangle.
     --
     -- entity_raw is rebuilt from the raw files on load in any case,
     -- so nothing written here persists into the save.
@@ -646,11 +707,14 @@ function evaluate_and_inject()
         -- the live raws rather than trusting a stored index, because
         -- raw load order shifts when any other mod adds a workshop.
         local owned = {}
-        for _, ws in ipairs(df.global.world.raws.buildings.workshops) do
-            for prefix, module in pairs(registry) do
-                if string.sub(ws.code, 1, #prefix) == prefix then
-                    table.insert(owned, { ws = ws, module = module })
-                    break
+        for _, vec in ipairs({ df.global.world.raws.buildings.workshops,
+                               df.global.world.raws.buildings.furnaces }) do
+            for _, ws in ipairs(vec) do
+                for prefix, module in pairs(registry) do
+                    if string.sub(ws.code, 1, #prefix) == prefix then
+                        table.insert(owned, { ws = ws, module = module })
+                        break
+                    end
                 end
             end
         end
@@ -675,29 +739,106 @@ function evaluate_and_inject()
                     end
                 end)
 
-                if not ok and _G.refinish_log_event then
-                    _G.refinish_log_event(string.format(
-                        "MODULE PERMISSIONS WARNING: Could not grant buildings to [%s].", code))
+                if not ok then
+                    log('WARNING', 'Could not grant module buildings.', code)
                 end
             end
 
-            if _G.refinish_log_event then
-                local names = {}
-                for _, entry in ipairs(owned) do table.insert(names, entry.ws.code) end
-                table.sort(names)
-                _G.refinish_log_event(string.format(
-                    "MODULE PERMISSIONS: %d building grant(s) across %d civ(s): %s",
-                    bld_injected, count_table(first_raw_for_code), table.concat(names, ", ")))
+            local names = {}
+            for _, entry in ipairs(owned) do table.insert(names, entry.ws.code) end
+            table.sort(names)
+            log('DETAIL', string.format('%d building grant(s) across %d civ(s):'
+                .. ' %s', bld_injected, count_table(first_raw_for_code),
+                table.concat(names, ', ')), 'BUILDINGS')
+        end
+    end
+
+    -- ==========================================
+    -- CUSTOM TOOL PERMISSIONS
+    -- ==========================================
+    -- A module tool made by a custom reaction needs no permission: the
+    -- reaction is the permission. A module tool meant to be made by DF's
+    -- OWN job, listed under each metal at the forge the way a ladle is,
+    -- only appears if the fort's civ lists it in
+    -- historical_entity.resources.tool_type. Measured: granting the fuel
+    -- tank's subtype there from the console made the forge offer it
+    -- under every metal, with the metal chosen by the menu and the bar
+    -- count taken from MATERIAL_SIZE.
+    --
+    -- No new schema, the same spirit as the building grant above. A
+    -- module tool that does NOT carry no_default_job is asking for DF's
+    -- native job, so it is granted; a tool that carries it is made by
+    -- a reaction and is left alone. Ownership is by prefix again.
+    --
+    -- Granted to the fort's civ only, because that is the entity the
+    -- forge reads. Other civs are not granted, so no caravan starts
+    -- carrying module tools.
+    --
+    -- THIS ONE NEEDS A CLEAR PASS, unlike buildings. resources.tool_type
+    -- is SAVED game state, and it holds a tool's subtype, which is a
+    -- POSITION in itemdefs.tools, not an id: clear_tools reindexes the
+    -- survivors, and tools are injected sorted by key, so adding a tool
+    -- shifts every position after it. The same reason reaction
+    -- permissions are cleared before a save. The withdrawal lives inside
+    -- clear_tools in refinish-module-inject-tool.lua, so it happens on
+    -- every path that removes a module tool, while the number still
+    -- means the tool; this evaluator re-grants after every inject.
+    -- ==========================================
+    local tool_granted = 0
+
+    do
+        local civ = nil
+        pcall(function() civ = df.historical_entity.find(df.global.plotinfo.civ_id) end)
+
+        -- Read off the live tools array, after inject, so every subtype
+        -- is the position the tool holds this session.
+        local want, names = {}, {}
+        for _, td in ipairs(df.global.world.raws.itemdefs.tools) do
+            local id, nodef, sub = nil, true, nil
+            pcall(function()
+                id    = td.id
+                nodef = td.flags.NO_DEFAULT_JOB
+                sub   = td.subtype
+            end)
+            if id and sub and not nodef then
+                for prefix in pairs(registry) do
+                    if string.sub(id, 1, #prefix) == prefix then
+                        table.insert(want, sub)
+                        table.insert(names, id)
+                        break
+                    end
+                end
+            end
+        end
+
+        if civ and #want > 0 then
+            local ok = pcall(function()
+                local v = civ.resources.tool_type
+                local have = {}
+                for _, s in ipairs(v) do have[s] = true end
+                for _, s in ipairs(want) do
+                    if not have[s] then
+                        v:insert('#', s)
+                        have[s] = true
+                        tool_granted = tool_granted + 1
+                    end
+                end
+            end)
+
+            table.sort(names)
+            if ok then
+                log('DETAIL', string.format('%d tool grant(s) to civ %d: %s',
+                    tool_granted, civ.id, table.concat(names, ', ')), 'TOOLS')
+            else
+                log('WARNING', "Could not grant tools to the fort's civ.",
+                    'TOOLS')
             end
         end
     end
 
-    if _G.refinish_log_event then
-        _G.refinish_log_event(string.format(
-            "MODULE PERMISSIONS: Evaluation complete. %d total permissions injected, %d rejected.",
-            total_injected, total_rejected
-        ))
-    end
+    log('DETAIL', string.format('Evaluation complete. %d total permissions'
+        .. ' injected, %d rejected.', total_injected, total_rejected),
+        'EVALUATION')
 
     return total_injected
 end
@@ -713,7 +854,8 @@ if dfhack_flags and dfhack_flags.module then
     return _ENV
 end
 
--- Direct execution: run and report
+-- Direct execution: run and report. This print stays: it only runs
+-- when this file is typed as a command, so it is the direct answer.
 local count = evaluate_and_inject()
 print(string.format("Module Permission Evaluator: %d permissions injected.", count))
 return _ENV

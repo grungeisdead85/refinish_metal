@@ -3,27 +3,78 @@
 -- ==========================================
 -- LIVE EVENT LOG PANEL
 -- ==========================================
--- Displays the in-memory log buffer (_G.refinish_log) with
--- color-coded severity. Log entries are colored based on their
--- PREFIX (the text before the first colon), not keyword scanning
--- the entire message. This is fast and deterministic.
+-- Displays the in-memory log buffer (_G.refinish_log). Every line is
+-- in the one grammar, SYSTEM SUBSYSTEM SUBJECT TYPE | body, composed
+-- by refinish-log, and renders as a two line header plus its body.
+-- Colour and the Log Detail filter both come from TYPE, the tag the
+-- emitter declared, and from nothing else: see style_for for the
+-- colour of each TYPE and DISPLAY FILTER for what each level shows.
 --
--- SEVERITY LEVELS (in priority order):
---   FATAL    - Unrecoverable crash during a pipeline step
---   ERROR    - Recoverable failure (missing data, decode error)
---   WARN     - Non-critical issue (dropped base, skipped shell)
---   CYCLE    - Pipeline lifecycle (boot, startup, shutdown, autosave)
---   BUILD    - Asset construction (scan, index, evaluate, load, save)
---   CLEAR    - Asset teardown (clear scripts)
---   SYSTEM   - Session lifecycle (map load/unload, DF launch)
---   RUNTIME  - Background monitors (JIT, watcher, tripwire, calendar)
---   UI       - Panel navigation, prompts, config changes
---   DEFAULT  - Anything that doesn't match a known prefix
+-- A line that does not parse renders as UNTYPED, with its text as
+-- the body. UNTYPED shows at every Log Detail level, because a line
+-- that did not come through a log funnel is a fault in the code that
+-- wrote it.
+--
+-- This used to colour untagged lines by their prefix, the text before
+-- the first colon, from a table of every subsystem's name. Every call
+-- site now states its TYPE, so the table and that renderer are gone.
+--
+-- SEARCH. Ctrl-F, or a click, puts the cursor in the search field
+-- under the title. Every word typed must appear in a line for it to
+-- show, in any case and anywhere in it: tags, time or body. So "ghost"
+-- keeps the ghost's lines, "ghost error" only its errors, and a job id
+-- one job's story. The list follows each keystroke. Enter keeps the
+-- search and leaves the field; Esc puts back what was there before.
+-- Search narrows what the Log Detail level shows; to search the debug
+-- lines too, set Log Detail to Debug.
 -- ==========================================
 
 local gui = require('gui')
 local widgets = require('gui.widgets')
 local dialogs = require('gui.dialogs')
+
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the panel action a line is
+-- about. Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'LOG_VIEWER'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
 
 
 -- ==========================================
@@ -103,164 +154,6 @@ end
 
 
 -- ==========================================
--- SEVERITY DETECTION (PREFIX-BASED)
--- ==========================================
--- Extracts the prefix (text before the first ":") from a log
--- entry and matches it against known prefix patterns. This is
--- more reliable than keyword-scanning the entire message body
--- because prefixes are controlled by us, but message content
--- can contain any words (e.g. "Error" in a metal name wouldn't
--- accidentally flag as an error).
---
--- Priority order matters: FATAL/ERROR/WARN are checked first
--- because a message like "STARTUP WARNING: ..." should be WARN,
--- not PIPELINE.
--- ==========================================
-
--- Lookup table: prefix fragment -> severity level.
--- Checked via string.find on the prefix (before the first colon).
--- Order within each severity doesn't matter; cross-severity
--- priority is handled by checking FATAL/ERROR/WARN first.
-local PREFIX_RULES = {
-    -- FATAL: Unrecoverable crashes
-    { pattern = "FATAL",            severity = "FATAL" },
-
-    -- ERROR: Recoverable failures
-    { pattern = "ERROR",            severity = "ERROR" },
-
-    -- WARN: Non-critical issues
-    { pattern = "WARNING",          severity = "WARN" },
-
-    -- CYCLE: Pipeline lifecycle transitions (boot, startup, shutdown, autosave)
-    { pattern = "BOOT",             severity = "CYCLE" },
-    { pattern = "STARTUP",          severity = "CYCLE" },
-    { pattern = "SHUTDOWN",         severity = "CYCLE" },
-    { pattern = "HARD SHUTDOWN",    severity = "CYCLE" },
-    { pattern = "AUTOSAVE",         severity = "CYCLE" },
-
-    -- SYSTEM: Session lifecycle
-    { pattern = "SC_MAP",           severity = "SYSTEM" },
-    { pattern = "SYSTEM",           severity = "SYSTEM" },
-    { pattern = "STATE CHECK",      severity = "SYSTEM" },
-    { pattern = "=== DWARF",        severity = "SYSTEM" },
-    { pattern = "Refinish Metal v", severity = "SYSTEM" },
-
-    -- BUILD: Asset construction (scan, index, evaluate, modules)
-    { pattern = "SCANNER",          severity = "BUILD" },
-    { pattern = "INDEX",            severity = "BUILD" },
-    { pattern = "MODULE ENGINE",    severity = "BUILD" },
-    { pattern = "MODULE REACT",     severity = "BUILD" },
-    { pattern = "MODULE INJECT",    severity = "BUILD" },
-    { pattern = "MODULE PERMISSIONS", severity = "BUILD" },
-    { pattern = "EVALUATE",         severity = "BUILD" },
-    { pattern = "SAVE/WASH",        severity = "BUILD" },
-    { pattern = "LOAD",             severity = "BUILD" },
-    { pattern = "DIAGNOSTIC DUMP",  severity = "BUILD" },
-
-    -- CLEAR: Asset teardown
-    { pattern = "CLEAR",            severity = "CLEAR" },
-
-    -- RUNTIME: Background monitors and JIT
-    { pattern = "JIT",              severity = "RUNTIME" },
-    { pattern = "Ghost Swap",       severity = "RUNTIME" },
-    { pattern = "WATCHER",          severity = "RUNTIME" },
-    { pattern = "Watcher",          severity = "RUNTIME" },
-    { pattern = "UI Tripwire",      severity = "RUNTIME" },
-    { pattern = "UI Monitor",       severity = "RUNTIME" },
-    { pattern = "Autosave Timer",   severity = "RUNTIME" },
-    { pattern = "Calendar",         severity = "RUNTIME" },
-    { pattern = "OVERLAY",          severity = "RUNTIME" },
-
-    -- UI: Panel navigation, prompts, config
-    { pattern = "UI NAV",           severity = "UI" },
-    { pattern = "PROMPT",           severity = "UI" },
-    { pattern = "Config",           severity = "UI" },
-    { pattern = "HELP",             severity = "UI" },
-    { pattern = "CIV DASH",         severity = "UI" },
-    { pattern = "INSPECTOR",        severity = "UI" },
-    { pattern = "LOG VIEWER",       severity = "UI" },
-    { pattern = "Live UI log",      severity = "UI" },
-}
-
--- Severity markers that appear at the HEAD of the message body,
--- immediately after the prefix colon.
---
--- The prefix rules above classify by subsystem, which is not the
--- same thing as severity. RM states severity after the colon:
---
---   MODULE PERMISSIONS: REJECTED [...] for [EVIL] ...
---   MODULE ENGINE: REACTION INJECTION FAILED for [...]
---
--- Classified by prefix alone, the first rendered in DEFAULT blue,
--- identical to an ordinary line, and the second rendered in BUILD
--- green, identical to a successful step. A failure that looks like
--- a success is worse than no message at all, because it reports
--- that everything is fine.
---
--- Scanning the whole body would be unsafe, exactly as the note
--- above says: a material or reaction id could contain any word.
--- Two constraints keep this tight:
---
---   1. Only the first few words are examined, so an id appearing
---      later in the message can never trigger a severity.
---   2. Matching is case sensitive and these markers are caps by
---      convention. "REJECTED" at the head is a marker; the
---      lowercase "rejected" in a summary count is prose and is
---      correctly ignored.
-local BODY_RULES = {
-    { pattern = "FATAL",    severity = "FATAL" },
-    { pattern = "FAILED",   severity = "ERROR" },
-    { pattern = "ERROR",    severity = "ERROR" },
-    { pattern = "REJECTED", severity = "WARN"  },
-    { pattern = "WARNING",  severity = "WARN"  },
-}
-
--- How many leading words of the body to examine. Three covers the
--- longest marker phrase currently emitted, "MATERIAL INJECTION
--- FAILED", without reaching into argument text.
-local BODY_WORDS_CHECKED = 3
-
-local function get_severity(msg)
-    if not msg then return "DEFAULT" end
-
-    -- Extract the prefix: everything before the first colon,
-    -- or the first 40 chars if there's no colon (covers messages
-    -- like "=== DWARF FORTRESS EXECUTABLE LAUNCHED ===").
-    local prefix = string.match(msg, "^%[%d+:%d+:%d+%]%s*(.-):")
-    if not prefix then
-        prefix = string.sub(msg, 1, 60)
-    end
-
-    -- ---- BODY HEAD, CHECKED FIRST ----
-    -- Severity outranks subsystem. A build step that failed is a
-    -- failure, not a build step.
-    local body = string.match(msg, "^%[%d+:%d+:%d+%]%s*.-:%s*(.*)")
-    if body then
-        local checked = 0
-        for word in body:gmatch("%S+") do
-            for _, rule in ipairs(BODY_RULES) do
-                if string.find(word, rule.pattern, 1, true) then
-                    return rule.severity
-                end
-            end
-            checked = checked + 1
-            if checked >= BODY_WORDS_CHECKED then break end
-        end
-    end
-
-    -- ---- SUBSYSTEM PREFIX ----
-    -- Walk the rules in priority order
-    for _, rule in ipairs(PREFIX_RULES) do
-        if string.find(prefix, rule.pattern, 1, true) then
-            return rule.severity
-        end
-    end
-
-    return "DEFAULT"
-end
-
-
--- ==========================================
 -- PANEL CLASS
 -- ==========================================
 RefinishPanelLog = defclass(RefinishPanelLog, widgets.Panel)
@@ -271,22 +164,9 @@ RefinishPanelLog.ATTRS = {
 function RefinishPanelLog:init()
     self.theme = self.theme or reqscript('refinish-theme').get_current_theme()
 
-    -- Severity -> Color mapping
-    -- Each category gets its own color so the log has visual
-    -- structure. Pipeline events are split into three phases
-    -- (CYCLE/BUILD/CLEAR) to break up the wall of same-color text.
-    self.severity_pens = {
-        FATAL    = self.theme.RISK_H,     -- Red: crash
-        ERROR    = self.theme.RISK_M,     -- LRed: failure
-        WARN     = self.theme.RISK_L,     -- Yellow: caution
-        CYCLE    = self.theme.TER,        -- Cyan: pipeline lifecycle (boot/startup/shutdown)
-        BUILD    = self.theme.PRI,        -- LGreen: asset construction (scan/index/evaluate)
-        CLEAR    = self.theme.SEC,        -- LBlue: teardown (clear scripts)
-        SYSTEM   = self.theme.NEUTRAL_B,  -- White: session lifecycle (map load/unload)
-        RUNTIME  = self.theme.PRI,        -- LBlue: background monitors (watcher/tripwire/JIT)
-        UI       = self.theme.NEUTRAL_S,  -- Black: low-priority navigation
-        DEFAULT  = self.theme.SEC,        -- LBlue: uncategorized
-    }
+    -- The search, as typed. Empty shows everything the level shows.
+    self.search = ''
+    self.search_hits = 0
 
     -- Build initial log display
     self.log_lines = self:build_log_lines()
@@ -329,7 +209,9 @@ function RefinishPanelLog:init()
     self.actions = {
         CUSTOM_CTRL_C = function()
             _G.refinish_log = {}
-            if _G.refinish_log_event then _G.refinish_log_event("LOG VIEWER: Live log cleared by user.") end
+            -- INFO: the first line of the fresh log, saying why
+            -- everything before it is gone.
+            log('INFO', 'Live log cleared by the user.', 'CLEAR')
             self:refresh_list()
         end,
         CUSTOM_CTRL_L = function()
@@ -340,8 +222,34 @@ function RefinishPanelLog:init()
         end
     }
 
+    -- ---- THE SEARCH FIELD ----
+    -- An activation key makes the field manage its own focus: it starts
+    -- unfocused, so the HUD's pane keys work as usual, and takes the
+    -- keyboard on Ctrl-F or a click. While it has focus the HUD sends it
+    -- every key first (see refinish-hud), so letters that are also pane
+    -- keys go into the search. Enter keeps the search and hands the
+    -- keyboard back; Esc does too, restoring the text from before.
+    self.search_field = widgets.EditField{
+        frame = {t = 1, l = 0, r = 0},
+        key = 'CUSTOM_CTRL_F',
+        label_text = 'Search: ',
+        text_pen = self.theme.PRI,
+        on_change = function(text) self:apply_search(text) end,
+        -- Enter hands the keyboard back; the search already applied as
+        -- it was typed, so this only makes sure it stands.
+        on_submit = function(text) self:apply_search(text) end,
+    }
+
     self:addviews{
-        widgets.Label{ frame = {t = 0, l = 0}, text = "LIVE EVENT LOG", text_pen = self.theme.PRI },
+        widgets.Label{ frame = {t = 0, l = 0}, text = {
+            { text = "LIVE EVENT LOG", pen = self.theme.PRI },
+            -- How many lines a search keeps, while one is set.
+            { text = function()
+                if self.search == '' then return '' end
+                return string.format('   %d line(s) match', self.search_hits)
+            end, pen = self.theme.SEC },
+        }},
+        self.search_field,
         self.list_widget,
 
         -- BOTTOM CONTROL BAR
@@ -353,6 +261,9 @@ function RefinishPanelLog:init()
                     text = make_key_label('CUSTOM_CTRL_C', 'Clear Live Log', self.theme.SEC),
                     on_click = self.actions.CUSTOM_CTRL_C,
                 },
+                -- Each label shows the key that runs its action. These
+                -- showed Ctrl-D beside the log export, which Ctrl-L
+                -- runs, and D beside the debug dump, which Ctrl-D runs.
                 widgets.Label{
                     frame = {t = 1, l = 0, w = 23},
                     text = make_key_label('CUSTOM_CTRL_L', 'Export Log Dump', self.theme.SEC),
@@ -383,8 +294,21 @@ function RefinishPanelLog:onRenderFrame(dc, rect)
     if self.tick_counter >= 60 then
         self.tick_counter = 0
         local current_count = _G.refinish_log and #_G.refinish_log or 0
-        if current_count ~= self.last_log_count then
+
+        -- ---- A SETTING CHANGE IS ALSO A REASON TO REBUILD ----
+        -- The rebuild was gated on the entry COUNT alone, so changing
+        -- Log Detail changed nothing on screen until the count moved
+        -- or the HUD was reloaded. The filter was working; the panel
+        -- simply never asked it again.
+        --
+        -- A generation counter rather than re-reading the setting
+        -- every frame: the config panel bumps it on change, so this
+        -- costs one table read per render instead of a persistent
+        -- lookup.
+        local gen = _G.refinish_log_filter_gen or 0
+        if current_count ~= self.last_log_count or gen ~= self.last_log_gen then
             self.last_log_count = current_count
+            self.last_log_gen = gen
 
             -- Capture scroll state BEFORE rebuilding
             local old_choices = self.list_widget:getChoices()
@@ -429,6 +353,167 @@ end
 -- iterate backwards to produce chronological display: oldest at
 -- top, newest at bottom).
 -- ==========================================
+-- ==========================================
+-- THE TAGGED LINE
+-- ==========================================
+--   SYSTEM SUBSYSTEM SUBJECT TYPE | body
+--
+-- Four tags, general to specific, then a pipe, then prose. The PIPE
+-- is the whole test: a line without one is not tagged and falls
+-- through to the renderer below exactly as before, so nothing has to
+-- be converted before this is useful.
+--
+-- Tags never contain spaces. Underscores inside a tag instead, which
+-- is what keeps the columns fixed and therefore scannable: every
+-- HIJACKER sits at the same x, so the eye runs down one column
+-- rather than reading across lines.
+-- ==========================================
+-- Measured against the real tags, not guessed. MAKING_CONCRETE and
+-- CREMATE_WATCHER are both exactly 15, so a 15 wide column with no
+-- separator produced MAKING_CONCRETESAND_WATCHER. pad() now owns the
+-- separator so that cannot recur at any length.
+--
+-- 4 glyph + 9 time + 16 + 16 + 13 + 8 = 66, inside the 69 wrap.
+-- Budget is WRAP_WIDTH (69) minus the list's 2 column icon.
+--
+-- 4 glyph + 9 time + 16 owner + 18 subsystem + 14 subject + 8 type
+-- = 69 exactly. SUBSYSTEM went to 17 because BUILDING_GRAPHICS is
+-- 17 and was being truncated; SUBJECT to 13 with what was left.
+--
+-- The repeat marker used to ride on the header and pushed a folded
+-- line one column under the scrollbar. It sits on the body now,
+-- where there is room and where the text wraps anyway.
+-- ---- TWO LINES, SIX SLOTS ----
+-- Line one is identity and verdict, line two is the specifics.
+--
+--   line 1   glyph 4 + time 9 + OWNER 16 + SUBSYSTEM 18 + TYPE
+--   line 2   indent 13 + SUBJECT 25 + slot5 16 + slot6 14 = 68
+--
+-- One line was arithmetically impossible, not merely cramped: the
+-- real values are OWNER 15, SUBSYSTEM up to 23 once reaction codes
+-- land there, and SUBJECT 24 for the longest tool key. That is 62
+-- before the glyph and the timestamp, against a budget of 69.
+--
+-- Slots five and six are reserved and render blank. A column of
+-- dashes would be noise that says nothing; a gap says there is room.
+local TAG_W  = { 15, 17 }     -- line one: owner, subsystem
+local TAG_W2 = { 24, 15, 14 } -- line two: subject, reserved, reserved
+
+local function parse_tagged(text)
+    local stamp, rest = string.match(text, "^(%[%d+:%d+:%d+%])%s*(.*)$")
+    if not stamp then stamp, rest = "", text end
+
+    local head, body = string.match(rest, "^(.-)%s*|%s*(.*)$")
+    if not head then return nil end
+
+    local t = {}
+    for word in head:gmatch("%S+") do t[#t + 1] = word end
+    if #t ~= 4 then return nil end
+
+    return { stamp = stamp, sys = t[1], sub = t[2],
+             subj = t[3], typ = t[4], body = body }
+end
+
+-- A line parse_tagged cannot read, as the record it would have
+-- returned: UNKNOWN owner and subsystem and UNTYPED, the same tags
+-- refinish-log's compose() gives a line whose emitter omitted them, so
+-- both kinds of nonconforming line read alike. The timestamp is kept.
+local function untyped(text)
+    local stamp, rest = string.match(text, "^(%[%d+:%d+:%d+%])%s*(.*)$")
+    if not stamp then stamp, rest = "", text end
+    return { stamp = stamp, sys = 'UNKNOWN', sub = 'UNKNOWN',
+             subj = '-', typ = 'UNTYPED', body = rest }
+end
+
+-- ---- SEVERITY: WEIGHT, NOT ONLY HUE ----
+-- One character cannot carry a serious fault, so the glyph block is
+-- three cells and fills in as severity rises. A solid block in a
+-- fixed left column is visible at any scroll speed and in peripheral
+-- vision, whatever else the log is doing.
+--
+-- SUSPECT is not on the degradation ladder. It means nothing failed
+-- and something is nevertheless wrong: a cache answering after it
+-- should have been dropped, a predicate that threw and was read as a
+-- no. Hot pink because it must be as visible as a fault while not
+-- claiming to be one.
+local TYPE_STYLE = {
+    FATAL   = { glyph = '\17\17\17', hot = COLOR_RED },
+    ERROR   = { glyph = '\254\254\254', hot = COLOR_LIGHTRED },
+    WARNING = { glyph = '!!!',      hot = COLOR_YELLOW },
+    SUSPECT = { glyph = '???',      hot = COLOR_LIGHTMAGENTA },
+}
+
+-- ---- EVERY VERDICT HAS ITS OWN COLOUR ----
+-- No two TYPEs share a colour, so the TYPE column reads by colour
+-- alone:
+--   FATAL     red             the four colours reserved for faults,
+--   ERROR     light red       in TYPE_STYLE above
+--   WARNING   yellow
+--   SUSPECT   light magenta
+--   UNTYPED   magenta         faults in the CODE: a call site that
+--   UNKNOWN   brown           declared no TYPE, or a TYPE nothing
+--                             knows. Magenta and brown resemble the
+--                             reserved colours, which only a fault may
+--                             wear, and these are faults.
+--   COMPLETE  PRI (green)
+--   YIELD     dark green
+--   READY     blue
+--   SYSTEM    white
+--   ONLINE    light cyan
+--   OFFLINE   grey
+--   INFO      SEC (light blue)
+--   DETAIL    TER (cyan)
+-- PRI, SEC and TER follow the theme, so a player who themes one of
+-- them to a colour in this list makes two verdicts match again.
+local function style_for(typ, theme)
+    local hot = TYPE_STYLE[typ]
+    if hot then return hot.glyph, hot.hot, true end
+
+    if typ == 'COMPLETE' then return ' \7 ',   theme.PRI,       false end
+    if typ == 'YIELD'    then return ' \7 ',   COLOR_GREEN,     false end
+    if typ == 'READY'    then return ' \7 ',   COLOR_BLUE,      false end
+    if typ == 'SYSTEM'   then return ' \4 ',   COLOR_WHITE,     false end
+    if typ == 'ONLINE'   then return ' \4 ',   COLOR_LIGHTCYAN, false end
+    if typ == 'OFFLINE'  then return ' \4 ',   COLOR_GREY,      false end
+    if typ == 'INFO'     then return ' \250 ', theme.SEC,       false end
+    if typ == 'DETAIL' then
+        -- No glyph at all. Debug output should not have a mark in the
+        -- left column competing with lines that mean something. The
+        -- theme's Tertiary colour, cyan by default, so a player can
+        -- move debug output's colour without moving a verdict.
+        return '   ', theme.TER, false
+    end
+    if typ == 'UNTYPED' then return ' \250 ', COLOR_MAGENTA, false end
+    -- UNKNOWN, and any TYPE a module invents. It still renders, in a
+    -- colour no other verdict uses, so the nonconforming TYPE is seen.
+    return ' \250 ', COLOR_BROWN, false
+end
+
+local function pad(s, w)
+    s = tostring(s or '')
+    if #s > w then s = s:sub(1, w) end
+    -- The trailing space is part of the column, not the caller's
+    -- problem. A tag that exactly fills its width used to touch the
+    -- next one, which is how MAKING_CONCRETE and SAND_WATCHER became
+    -- one word.
+    return s .. string.rep(' ', w - #s) .. ' '
+end
+
+-- ---- REPEAT COLLAPSING ----
+-- The single largest readability gain available, and it needs no
+-- emitter change. HIDE SPRITE emitted 191 of 905 lines, and one
+-- feedstock warning repeated five times for the same job.
+--
+-- Two entries fold when they are identical once every run of digits
+-- is blanked, so texture_indices7[137] and [138] are the same line
+-- and two different subsystems never are. The count rides on the
+-- header, so a folded line still says how many.
+local FOLD_WINDOW = 30
+
+local function fold_key(text)
+    return (text:gsub("%d+", "#"))
+end
+
 function RefinishPanelLog:build_log_lines()
     local lines = {}
     -- Capture self for use in icon callbacks. Unlike the local
@@ -438,32 +523,274 @@ function RefinishPanelLog:build_log_lines()
     local panel = self
 
     if _G.refinish_log and #_G.refinish_log > 0 then
-        for i = #_G.refinish_log, 1, -1 do
-            local raw_text = _G.refinish_log[i]
-            local severity = get_severity(raw_text)
-            local pen = self.severity_pens[severity] or self.theme.SEC
-            local wrapped = wrap_log_entry(raw_text, WRAP_WIDTH)
-            for _, line in ipairs(wrapped) do
-                local idx = #lines + 1
+        -- Walk oldest to newest so a run collapses onto the FIRST of
+        -- it, then reverse for display. Folding onto the last would
+        -- move the timestamp forward and lose when the run started.
+        --
+        -- ---- A WINDOW, NOT JUST ADJACENCY ----
+        -- Consecutive-only folding was measured at 1% on a real log:
+        -- the repeats are interleaved, not adjacent. A window of 30
+        -- gets 21% and collapses the genuine repeaters (one HIDE
+        -- SPRITE line 26 times, an air dry poll 7 times) without
+        -- reordering anything. Folding across the WHOLE log gets 65%
+        -- and is wrong: it would hoist a line from ten minutes ago
+        -- into a current run and destroy the ordering that makes the
+        -- log readable as a sequence.
+        -- ---- DISPLAY FILTER ----
+        -- Reads the TYPE tag the emitter declared, and nothing else.
+        -- Three levels, landing on the bands the colours already
+        -- use: QUIET is the POP band, NORMAL adds the ordinary INFO
+        -- stream, DEBUG adds per-item DETAIL.
+        --
+        -- UNTYPED and UNKNOWN show at every level. A line whose
+        -- emitter has not declared itself is a fault in the code, not
+        -- a message, and hiding it would let non-compliance sit
+        -- unnoticed.
+        -- YIELD sits with INFO rather than in QUIET, even though its
+        -- colour pops: yields arrive all through play, and Quiet is
+        -- for faults and the few confirmations a player wants at a
+        -- glance, so every fault stays easy to find without scrolling.
+        local SHOW = {
+            QUIET  = { FATAL=1, ERROR=1, WARNING=1, SUSPECT=1,
+                       COMPLETE=1, SYSTEM=1, ONLINE=1, OFFLINE=1,
+                       READY=1, UNTYPED=1, UNKNOWN=1 },
+            INFO   = false,  -- everything except DETAIL
+            DEBUG  = true,   -- everything
+        }
+        -- Quiet is the default (2026-10-07). Info was Normal: a world
+        -- still holding 'NORMAL', or any other unknown value, reads as
+        -- Quiet, which is also the row the config panel shows for it.
+        local lvl = 'QUIET'
+        pcall(function()
+            lvl = dfhack.persistent.getSiteData('refinish_config_log')
+                  or 'QUIET'
+        end)
+        local allow = SHOW[lvl]
+        if allow == nil then allow = SHOW.QUIET end
+
+        -- ---- A LINE THAT DOES NOT PARSE IS UNTYPED ----
+        -- It used to count as INFO, while unconverted emitters were
+        -- still writing untagged lines. Every emitter declares its
+        -- TYPE now, so a line with none came from outside a log funnel
+        -- and shows at every level, the same as a declared UNTYPED.
+        local function visible(typ)
+            if allow == true then return true end
+            typ = typ or 'UNTYPED'
+            if allow == false then return typ ~= 'DETAIL' end
+            return allow[typ] == 1
+        end
+
+        -- ---- SEARCH ----
+        -- Every word typed must appear somewhere in the line, in any
+        -- case. Found as plain text, never as a pattern, so a search
+        -- can hold brackets, dots or percent signs. After the level
+        -- filter, so it narrows what the level already shows.
+        local terms = {}
+        for w in string.lower(self.search or ''):gmatch('%S+') do
+            terms[#terms + 1] = w
+        end
+        local function matches(raw)
+            if #terms == 0 then return true end
+            local low = string.lower(raw)
+            for _, w in ipairs(terms) do
+                if not string.find(low, w, 1, true) then return false end
+            end
+            return true
+        end
+        local hits = 0
+
+        local folded, seen_at = {}, {}
+        for i = 1, #_G.refinish_log do
+            local raw = _G.refinish_log[i]
+            local ftyp = string.match(raw,
+                '^%[%d+:%d+:%d+%]%s*%S+%s+%S+%s+%S+%s+(%S+)%s+|')
+            if not visible(ftyp) or not matches(raw) then goto skip end
+            hits = hits + 1
+            local key = fold_key(raw)
+            local at  = seen_at[key]
+            if at and (#folded - at) <= FOLD_WINDOW then
+                folded[at].n = folded[at].n + 1
+            else
+                folded[#folded + 1] = { key = key, text = raw, n = 1 }
+                seen_at[key] = #folded
+            end
+            ::skip::
+        end
+        self.search_hits = hits
+
+        for i = #folded, 1, -1 do
+            local raw_text = folded[i].text
+            local repeats  = folded[i].n
+
+            -- ---- EVERY LINE RENDERS AS HEADER PLUS BODY ----
+            -- One that does not parse is rendered as UNTYPED from an
+            -- UNKNOWN owner, the tags refinish-log gives a line whose
+            -- emitter omitted them, with its whole text as the body.
+            local tg = parse_tagged(raw_text) or untyped(raw_text)
+            local glyph, verdict, hot = style_for(tg.typ, self.theme)
+            local idx = #lines + 1
+
+            -- A hot line is hot end to end. No hunting for which
+            -- word went yellow.
+            local tag_pen  = hot and verdict or COLOR_CYAN
+            local subj_pen = hot and verdict or self.theme.GREY
+
+            -- ---- ONE PEN PER COLUMN ----
+            -- Every tag shared a pen before, so the four columns
+            -- rendered as one block and the segmentation the
+            -- scheme depends on never appeared.
+            --
+            -- OWNER is neutral: you generally know whose line it
+            -- is. SYSTEM pops, because it is what you scan for.
+            -- SUBJECT pops WHEN STATED and recedes when it is a
+            -- dash, so a line worth correlating looks better once
+            -- someone has said what it is about. TYPE carries its
+            -- verdict.
+            --
+            -- A fault overrides all of it and colours the header
+            -- end to end, so there is never any hunting for which
+            -- word went yellow.
+            local stamp = (tg.stamp or ''):gsub('[%[%]]', '')
+
+            -- ---- CORE'S OWN STREAM LINES STAY RECOGNISABLE ----
+            -- A module's OWNER is neutral because you generally
+            -- know whose line it is and it should not compete
+            -- with the subsystem beside it.
+            --
+            -- RM's own peripheral subsystems take a brand colour
+            -- instead, so TOOL_SPRITES and GRAPHICS read as RM at
+            -- a glance even though they use the module format.
+            -- SEC rather than PRI: it identifies, it does not
+            -- need to pull the eye, and PRI stays reserved for a
+            -- verdict.
+            --
+            -- Core naming itself is not the inversion that was
+            -- wrong before. Core must not know which MODULES
+            -- exist; knowing its own name is unavoidable and
+            -- harmless.
+            local own = (tg.sys == 'REFINISH_METAL')
+            local owner_pen = hot and verdict
+                              or (own and self.theme.SEC
+                                      or self.theme.GREY)
+            -- ---- RM'S OWN HEADERS OPEN WITH THE BRAND ----
+            -- A module's subsystem is lightcyan: cold, pops, and
+            -- distinct from everything around it.
+            --
+            -- RM's own takes PRI instead, so a core header reads
+            -- brand purple then brand green before anything else
+            -- on the line. Position keeps it unambiguous: green
+            -- in column two is identity, green in column four is
+            -- a verdict, and the two never occupy the same slot.
+            local sys_pen   = hot and verdict
+                              or (own and self.theme.PRI
+                                      or COLOR_LIGHTCYAN)
+            local subj_pen2 = hot and verdict
+                              or (tg.subj == '-' and self.theme.GREY
+                                                 or COLOR_WHITE)
+
+            -- ---- LINE ONE: WHO, AND HOW IT WENT ----
+            -- TYPE rides up here so the verdict is readable
+            -- without dropping to the second line.
+            local head = {
+                { text = glyph .. ' ', pen = verdict },
+                -- Restored. parse_tagged was capturing the stamp
+                -- and the header was dropping it on the floor.
+                { text = stamp .. ' ', pen = self.theme.GREY },
+                { text = pad(tg.sys,  TAG_W[1]), pen = owner_pen },
+                { text = pad(tg.sub,  TAG_W[2]), pen = sys_pen },
+                { text = tg.typ, pen = verdict },
+            }
+
+            -- ---- LINE TWO: WHICH THING ----
+            -- Indented to the width of the glyph and timestamp so
+            -- it reads as a continuation rather than a new entry,
+            -- and so SUBJECT starts at a fixed column that can be
+            -- scanned straight down.
+            --
+            -- Slots five and six are reserved. They render as
+            -- blank rather than as dashes: a dash column is noise
+            -- that says nothing, a gap says there is room.
+            local head2 = {
+                { text = string.rep(' ', 13), pen = self.theme.GREY },
+                { text = pad(tg.subj, TAG_W2[1]), pen = subj_pen2 },
+            }
+            -- Repeat marker deliberately NOT on the header: at
+            -- three digits it pushed the line past the wrap and
+            -- under the scrollbar. The body has room and wraps.
+            local body_txt = tg.body
+            if repeats > 1 then
+                body_txt = body_txt .. '   (x' .. repeats .. ')'
+            end
+            -- ---- EVERY LINE CARRIES THE MARKER ----
+            -- The original renderer gave the icon callback to
+            -- every wrapped line, so the cursor was visible
+            -- wherever it sat. Giving it to the header alone made
+            -- it vanish on two lines in three and flicker back as
+            -- it passed each header.
+            --
+            -- A helper rather than a third copy of the closure:
+            -- three hand-written copies is three chances to drift.
+            local function marker(at)
+                return function()
+                    if panel.list_widget then
+                        local sel = panel.list_widget:getSelected()
+                        if sel == at then return string.char(16) end
+                    end
+                    return " "
+                end
+            end
+
+            table.insert(lines, {
+                text = head,
+                icon = marker(idx),
+                icon_pen = self.theme.NEUTRAL_B,
+            })
+
+            local idx2 = #lines + 1
+            table.insert(lines, {
+                text = head2,
+                icon = marker(idx2),
+                icon_pen = self.theme.NEUTRAL_B,
+            })
+
+            -- Bulk beneath, indented, in the header's verdict
+            -- colour. One entry carries one verdict end to end, so
+            -- a fault's detail reads as a fault and a COMPLETE's
+            -- reads as done. Every body takes its TYPE's pen, so
+            -- each verdict keeps its own colour (see style_for).
+            -- ---- INDENT ONCE, AND BUDGET FOR IT ----
+            -- This wrapped the body with the indent already
+            -- attached and then indented the result again, so
+            -- every line ran four columns past the wrap and
+            -- printed under the scrollbar.
+            --
+            -- The wrap has to be told how much room the indent
+            -- costs rather than being handed a string that
+            -- already spent it.
+            local BODY_INDENT = '    '
+            local body_room = WRAP_WIDTH - #BODY_INDENT
+            for _, bl in ipairs(wrap_log_entry(body_txt,
+                                               body_room)) do
+                local bidx = #lines + 1
                 table.insert(lines, {
-                    text = {{ text = line, pen = pen }},
-                    -- Icon callback: returns a cursor marker on the
-                    -- selected row, blank on all others. Uses panel
-                    -- reference to access list_widget at render time
-                    -- (not build time), so it's never nil or stale.
-                    icon = function()
-                        if panel.list_widget then
-                            local sel = panel.list_widget:getSelected()
-                            if sel == idx then return string.char(16) end
-                        end
-                        return " "
-                    end,
+                    text = {{ text = BODY_INDENT .. bl,
+                              pen = verdict }},
+                    icon = marker(bidx),
                     icon_pen = self.theme.NEUTRAL_B,
                 })
             end
         end
     else
         table.insert(lines, { text = {{ text = "  (Log is empty)", pen = self.theme.SEC }} })
+    end
+
+    -- ---- NOTHING LEFT TO SHOW ----
+    -- Said rather than left blank, so an empty list reads as the search
+    -- or the level hiding everything, not as the log being broken.
+    if #lines == 0 then
+        local why = (self.search ~= '') and "  (No lines match the search)"
+                    or "  (No lines at this Log Detail level)"
+        table.insert(lines, { text = {{ text = why, pen = self.theme.SEC }} })
     end
 
     return lines
@@ -474,6 +801,12 @@ end
 -- KEY INPUT HANDLER
 -- ==========================================
 function RefinishPanelLog:onInput(keys)
+    -- While the search field has the keyboard every key is its: Ctrl-C
+    -- there copies the search, and must not reach the action below that
+    -- clears the live log.
+    if self.search_field and self.search_field.focus then
+        return RefinishPanelLog.super.onInput(self, keys)
+    end
     for key_name, action in pairs(self.actions) do
         if keys[key_name] then
             action()
@@ -492,6 +825,26 @@ function RefinishPanelLog:refresh_list()
     self.list_widget:setChoices(self.log_lines)
 end
 
+-- ==========================================
+-- APPLYING A SEARCH
+-- ==========================================
+-- Called by the search field on every change. Rebuilds the list with
+-- the new search and puts the cursor on the newest match, at the
+-- bottom, where the log's newest line always sits. The periodic
+-- rebuild in onRenderFrame reads self.search too, so new lines that
+-- match keep arriving while a search is set.
+function RefinishPanelLog:apply_search(text)
+    self.search = text or ''
+    self.log_lines = self:build_log_lines()
+    self.list_widget:setChoices(self.log_lines)
+    local n = #self.log_lines
+    self.list_widget:setSelected(n)
+    local visible = self.list_widget.frame_body
+                    and self.list_widget.frame_body.height or 20
+    local top = n - visible + 1
+    self.list_widget.page_top = (top < 1) and 1 or top
+end
+
 
 -- ==========================================
 -- PERMANENT DUMP GENERATOR
@@ -500,7 +853,13 @@ function RefinishPanelLog:export_permanent_dump()
     local dump_name = reqscript('refinish-debug').make_filename("log")
 
     local ok, err = pcall(function()
-        local file = io.open(dump_name, "w")
+        -- ---- AN UNOPENED FILE IS A FAILED EXPORT ----
+        -- io.open does not raise. It returns nil and the reason, so an
+        -- unchecked nil wrote nothing and still reported success. The
+        -- else below raises instead, which sends it down the failure
+        -- path with the reason. Level 0 keeps a file and line prefix
+        -- off the message the player reads.
+        local file, open_err = io.open(dump_name, "w")
         if file then
             file:write("==================================================\n")
             file:write("REFINISH STEEL: PERMANENT EVENT LOG DUMP\n")
@@ -515,11 +874,14 @@ function RefinishPanelLog:export_permanent_dump()
                 file:write("(No events logged.)\n")
             end
             file:close()
+        else
+            error(tostring(open_err or ('could not open ' .. tostring(dump_name))), 0)
         end
     end)
 
     if ok then
-        if _G.refinish_log_event then _G.refinish_log_event("LOG VIEWER: Permanent log dump exported -> " .. dump_name) end
+        log('INFO', 'Permanent log dump exported to '
+            .. tostring(dump_name) .. '.', 'EXPORT')
         dialogs.showMessage(
             "Export Successful",
             "The permanent log has been saved to your main Dwarf Fortress folder as:\n\n" .. dump_name,
@@ -527,7 +889,7 @@ function RefinishPanelLog:export_permanent_dump()
         )
         self:refresh_list()
     else
-        if _G.refinish_log_event then _G.refinish_log_event("LOG VIEWER ERROR: Failed to export -> " .. tostring(err)) end
+        log('ERROR', 'Export failed: ' .. tostring(err), 'EXPORT')
         dialogs.showMessage(
             "Export Failed",
             "An error occurred while trying to save the log file:\n\n" .. tostring(err),

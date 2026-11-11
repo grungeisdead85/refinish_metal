@@ -19,19 +19,70 @@
 --
 -- USAGE
 --
---     refinish-tool-graphics probe MAKING_FUEL_SMALL_CASK ITEM_TOOL_LARGE_POT
---     refinish-tool-graphics copy  MAKING_FUEL_SMALL_CASK ITEM_TOOL_LARGE_POT
---     refinish-tool-graphics copyall MAKING_FUEL_
+--     refinish-tool-graphics probe <tool id> ITEM_TOOL_LARGE_POT
+--     refinish-tool-graphics copy  <tool id> ITEM_TOOL_LARGE_POT
+--     refinish-tool-graphics copyall <prefix>
 --
 -- probe   reports every field that differs, and nothing else.
 -- copy    copies the graphics shaped fields from donor to target.
 -- copyall applies the built in DONOR_MAP to every injected tool.
+--
+-- probe and copy answer a command typed at the console, so they print.
+-- copyall is also called by the module engine on every injection, as a
+-- module function (COPYALL, CALLABLE AS A MODULE; refinish-module-engine.lua,
+-- SPRITES), which nobody typed, so it reports to the log only, typed or not.
 --
 -- Run probe FIRST. It tells you whether the graphics state is even on
 -- this struct. If probe reports no differences beyond id, name and
 -- subtype, then sprites live somewhere else entirely and copying here
 -- will not help, which is worth knowing before spending a recycle.
 -- ==========================================
+
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- RM's own, and peripheral rather than pipeline. Every log line this
+-- file writes goes through log(), in the one grammar the log panel
+-- reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body.
+--
+-- The panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: COPY for one tool, COPYALL for the
+-- run.
+--
+-- This replaces a log() that took the subsystem as an argument and
+-- let refinish-log guess TYPE from the words (read_type) unless a call
+-- site said otherwise.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here. The prints that remain in
+-- this file answer probe and copy, typed at the console (see USAGE).
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'TOOL_GRAPHICS'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
 
 local args = {...}
 local MODE   = args[1] or "probe"
@@ -43,22 +94,26 @@ local DONOR  = args[3]
 -- DONOR MAP
 -- ==========================================
 -- Which vanilla tool each injected tool borrows its sprite from, used
--- by copyall. Chosen so the borrowed art is at least plausible: bottles
--- take the jug, casks take the large pot.
+-- by copyall. EMPTY since 2026-09-25, so copyall copies nothing: the
+-- last entries were Making Fuel's vessels, and their donors are now
+-- declared by their own RM catalog registrations as graphics.donor
+-- (refinish-core-payload, CATALOG: VESSELS), the same whole donor copy,
+-- run by refinish-sprite-engine at injection. The choice lives there
+-- now: bottles take the jug, casks take the large pot.
 --
 -- This is the rudimentary system. Point a tool at vanilla art by code,
 -- no graphics raws involved. Swapping to your own art later is the same
 -- mechanism with a donor that is your own tool.
+--
+-- KINDLING, BRANCH, CINDER, DUNG, STRAW, SAWDUST and BARK sat here
+-- until 2026-09-25 too, pointing at ITEM_TOOL_<X>_DUMMY donors that
+-- never existed: every injection logged "donor not found" for each one
+-- that still had a Making Fuel tool. Each carries its own art where it
+-- is declared (Making Fuel's tools file, or RM's catalog for sawdust and
+-- bark); the cinder form is gone.
 -- ==========================================
 
-local DONOR_MAP = {
-    SMALL_BOTTLE = "ITEM_TOOL_JUG",
-    LARGE_BOTTLE = "ITEM_TOOL_JUG",
-    SMALL_CASK   = "ITEM_TOOL_LARGE_POT",
-    LARGE_CASK   = "ITEM_TOOL_LARGE_POT",
-    KINDLING     = "ITEM_TOOL_BRANCH_DUMMY",
-    BRANCH       = "ITEM_TOOL_BRANCH_DUMMY"
-}
+local DONOR_MAP = {}
 
 
 -- ==========================================
@@ -193,15 +248,23 @@ local function looks_graphical(name)
     return false
 end
 
-local function copy(target_code, donor_code)
+-- to_log is true for copyall (see USAGE): its reports go to the log
+-- instead of the console. A typed copy leaves it nil and prints.
+local function copy(target_code, donor_code, to_log)
     local target = find_tool(target_code)
     local donor  = find_tool(donor_code)
 
-    if not target then print("  target not found: " .. tostring(target_code)); return 0 end
-    if not donor  then print("  donor not found: "  .. tostring(donor_code));  return 0 end
+    -- A copy that cannot happen. WARNING in the log, since that tool
+    -- then draws no borrowed sprite this session.
+    local function refuse(msg)
+        if to_log then log('WARNING', msg, 'COPY') else print("  " .. msg) end
+        return 0
+    end
+    if not target then return refuse("target not found: " .. tostring(target_code)) end
+    if not donor  then return refuse("donor not found: "  .. tostring(donor_code))  end
 
     local names = field_names(donor)
-    if not names then print("  could not iterate donor"); return 0 end
+    if not names then return refuse("could not iterate donor " .. tostring(donor_code)) end
 
     local copied = 0
 
@@ -231,10 +294,37 @@ local function copy(target_code, donor_code)
         end
     end
 
-    print(string.format("  %s <- %s : %d fields copied", target_code, donor_code, copied))
+    local done = string.format("%s <- %s : %d fields copied", target_code, donor_code, copied)
+    if to_log then log('DETAIL', done, 'COPY') else print("  " .. done) end
     return copied
 end
 
+
+-- ==========================================
+-- COPYALL, CALLABLE AS A MODULE
+-- ==========================================
+-- The module engine calls this once per module injection, through the
+-- script's environment (ONE LOOKUP PER SCRIPT A RUN, in
+-- refinish-module-engine.lua). It used to run the whole script for it,
+-- 15 times a load at about 14 ms each (MEASURED 2026-10-01, the load
+-- clock, region4). A typed copyall still comes through the dispatch.
+function copyall(prefix)
+    local n = 0
+    for key, donor_code in pairs(DONOR_MAP) do
+        local target_code = prefix .. key
+        if find_tool(target_code) then
+            n = n + copy(target_code, donor_code, true)
+        end
+    end
+    -- DETAIL: runs on every injection, inside the module pipeline.
+    log('DETAIL', string.format(
+        "donor copy applied for %s (%d fields).", prefix, n), 'COPYALL')
+    return n
+end
+
+-- Loaded as a module (dfhack.script_environment), the file stops here:
+-- the dispatch below answers typed commands only.
+if dfhack_flags and dfhack_flags.module then return end
 
 -- ==========================================
 -- DISPATCH
@@ -255,19 +345,15 @@ elseif MODE == "copy" then
     copy(TARGET, DONOR)
 
 elseif MODE == "copyall" then
-    local prefix = TARGET or "MAKING_FUEL_"
-    local n = 0
-    for key, donor_code in pairs(DONOR_MAP) do
-        local target_code = prefix .. key
-        if find_tool(target_code) then
-            n = n + copy(target_code, donor_code)
-        end
+    -- No default. Every caller names its prefix (the engine does, on
+    -- every injection); the default used to be MAKING_FUEL_, a module's
+    -- name in a core file.
+    local prefix = TARGET
+    if not prefix then
+        print("  usage: refinish-tool-graphics copyall <prefix>")
+        return
     end
-    print(string.format("  copyall complete for %s.", prefix))
-    if _G.refinish_log_event then
-        _G.refinish_log_event(string.format(
-            "TOOL GRAPHICS: donor copy applied for %s (%d fields).", prefix, n))
-    end
+    copyall(prefix)
 
 else
     print("  modes: probe | copy | copyall")

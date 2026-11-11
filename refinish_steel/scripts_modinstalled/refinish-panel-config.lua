@@ -6,6 +6,49 @@ local widgets = require('gui.widgets')
 local dialogs = require('gui.dialogs')
 local RefinishPrompt = reqscript('refinish-prompt').RefinishPrompt
 
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the setting a line is about. Nil
+-- renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'CONFIG'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
 RefinishPanelConfig = defclass(RefinishPanelConfig, widgets.Panel)
 RefinishPanelConfig.ATTRS = { theme = DEFAULT_NIL }
 
@@ -23,6 +66,13 @@ function RefinishPanelConfig:init()
     local C_NEG = self.theme.SEC
 
     local current_perf = get_pref('refinish_config_perf', 'ON')
+    -- Protect Bases also decides which metals carry the metal grinder's
+    -- class, which is granted only at startup (refinish-index-reaction,
+    -- THE METAL GRINDER'S CLASS), so a change takes a data cycle, prompted
+    -- as Material Finishes is below. The grind watcher reads the setting
+    -- live and needs none.
+    -- Off by default (refinish-index-reaction.lua, protected_bases).
+    local current_protect = get_pref('refinish_config_protect', 'NO')
     
     local hk_config   = get_pref('refinish_hk_config',   'Ctrl-Shift-C')
     local hk_metals   = get_pref('refinish_hk_metals',   'Ctrl-Shift-M')
@@ -50,7 +100,10 @@ function RefinishPanelConfig:init()
             function(idx, choice)
                 dfhack.persistent.saveSiteData(pref_id, choice.value)
                 safe_rebind(old_key, choice.value, script_cmd)
-                if _G.refinish_log_event then _G.refinish_log_event("Config: Hotkey bound to " .. choice.value) end
+                -- INFO: a setting the player changed. script_cmd names
+                -- which hotkey it was.
+                log('INFO', 'Hotkey for ' .. tostring(script_cmd) .. ' bound to '
+                    .. tostring(choice.value) .. '.', 'HOTKEY')
                 if _G.refinish_hud_view then _G.refinish_hud_view:dismiss() end
                 dfhack.run_script('refinish-hud', 'show', 'config')
             end)
@@ -119,20 +172,42 @@ function RefinishPanelConfig:init()
         {label = 'Yes', value = 'YES', pen = C_VAL}, {label = 'No', value = 'NO', pen = C_NEG},
     }, 'refinish_config_pause', 'YES')
 
-    self.w_save_protocol = make_themed_cycle(8, 'CUSTOM_SHIFT_E', 'Save Protocol:', {
-        {label = 'Hotsave', value = 'HOTSAVE', pen = self.theme.RISK_L}, {label = 'Autosave', value = 'AUTOSAVE', pen = C_VAL},
-    }, 'refinish_config_save_protocol', 'AUTOSAVE')
+    -- SAVE PROTOCOL OPTION (removed 2026-09-29)
+    -- It chose between Hotsave (items keep their materials through a
+    -- save) and Autosave (the legacy wash: finished items rewritten to
+    -- their base metals, their finishes kept in a JSON payload). Measured
+    -- the same day: both game saves bring every finish back under Hotsave
+    -- with no payload either way, so the wash was retired and every save
+    -- is a hotsave. A stored refinish_config_save_protocol is no longer
+    -- read.
 
-    self.w_menu = make_themed_cycle(10, 'CUSTOM_SHIFT_R', 'Menu Data Cycle:', {
-        {label = 'Auto', value = 'AUTO', pen = C_VAL}, {label = 'Manual', value = 'MANUAL', pen = C_NEG},
-    }, 'refinish_config_esc', 'AUTO')
+    -- MENU DATA CYCLE OPTION (removed 2026-09-29)
+    -- It chose whether opening the ESC options screen unloaded RM's data
+    -- (Auto) or left it loaded for a manual shutdown before saving
+    -- (Manual). refinish-save-hook.lua now unloads for the game's own
+    -- saves, from the moment one is asked for, so there is nothing left
+    -- to choose. A stored refinish_config_esc is no longer read.
 
-    self.w_delay = make_themed_cycle(12, 'CUSTOM_SHIFT_T', 'Load Delay:', {
-        {label = '1 Tick', value = 'TICK', pen = C_VAL}, {label = '100 Frames', value = 'FRAMES_100', pen = self.theme.RISK_L},
-        {label = '20 Frames', value = 'FRAMES_20', pen = self.theme.RISK_M}, {label = 'Instant', value = 'NONE', pen = self.theme.RISK_H},
-    }, 'refinish_config_delay', 'TICK')
+    -- Load Delay. Instant is the only safe setting; the risk pens used
+    -- to say the opposite. Any delay leaves a window in which a save's
+    -- module material items point past the end of the inorganics
+    -- array, where LIQUID_MISC resolves to magma. Longer delay, wider
+    -- window, hotter pen. Kept selectable for diagnosis only.
+    -- LOAD DELAY OPTION (removed)
+    -- Startup always runs Instant now, hardcoded in refinish_steel.lua.
+    -- Any delay leaves a window in which a save's module material items
+    -- point past the end of the inorganics array, where LIQUID_MISC
+    -- resolves to magma. There is no setting here worth offering.
+    -- self.w_delay = make_themed_cycle(12, 'CUSTOM_SHIFT_T', 'Load Delay:', {
+    --     {label = 'Instant', value = 'NONE', pen = C_VAL}, {label = '1 Tick', value = 'TICK', pen = self.theme.RISK_L},
+    --     {label = '20 Frames', value = 'FRAMES_20', pen = self.theme.RISK_M}, {label = '100 Frames', value = 'FRAMES_100', pen = self.theme.RISK_H},
+    -- }, 'refinish_config_delay', 'NONE')
 
-    self.w_perf = make_themed_cycle(14, 'CUSTOM_SHIFT_Y', 'Material Finishes:', {
+    -- ROW ORDER, 2026-09-29: the rows from here down moved up into the
+    -- slots the three removed options left, and the hotkeys run
+    -- QWERTYUIOP from the top of the column down, so a row's key follows
+    -- its place. The rows are defined out of order; frame t places them.
+    self.w_perf = make_themed_cycle(10, 'CUSTOM_SHIFT_R', 'Material Finishes:', {
         {label = 'ON', value = 'ON', pen = C_VAL}, {label = 'OFF', value = 'OFF', pen = C_NEG},
     }, 'refinish_config_perf', current_perf, function(val, state)
         RefinishPrompt{
@@ -140,13 +215,18 @@ function RefinishPanelConfig:init()
             text_pen = self.theme.PRI,
             on_yes = function()
                 current_perf = val
-                if _G.refinish_log_event then _G.refinish_log_event("Config: Generate Material Finishes toggled to " .. val) end
+                -- INFO: a setting the player changed, and why the data
+                -- cycle that follows ran.
+                log('INFO', 'Material finishes set to ' .. tostring(val)
+                    .. '. Triggering a data cycle.', 'FINISHES')
                 dfhack.run_script('refinish-hard-shutdown', 'SILENT')
                 dfhack.run_script('refinish-startup', 'SILENT')
                 local jobs_killed = _G.refinish_last_jobs_canceled or 0; _G.refinish_last_jobs_canceled = nil
                 local msg_setting = get_pref('refinish_config_msg', 'GUIDED')
                 if msg_setting == 'GUIDED' or msg_setting == 'DEBUG' then
-                    local action_txt = (val == 'OFF') and "purged from active RAM and saved.\n\nChanging this configuration setting to ON will restore and inject data." or "retrieved and injected into active RAM.\n\nChanging this configuration setting to OFF will save and purge data."
+                    -- No "saved" or "restored": since the payload's retirement
+                    -- nothing records an item's Material Finish while OFF.
+                    local action_txt = (val == 'OFF') and "purged from active RAM." or "injected into active RAM."
                     local debug_txt = (msg_setting == 'DEBUG') and ("\n\n[DEBUG: Material Finishes flag toggled to " .. val .. ". " .. jobs_killed .. " jobs canceled.]") or ""
                     RefinishPrompt{ frame_h = (msg_setting == 'DEBUG') and 18 or 12, text = "Material finish data has been successfully " .. action_txt .. debug_txt, text_pen = self.theme.PRI, on_ok = function() end }:show()
                 elseif msg_setting == 'PASSIVE' then
@@ -156,7 +236,7 @@ function RefinishPanelConfig:init()
             on_no = function()
                 dfhack.persistent.saveSiteData('refinish_config_perf', current_perf)
                 for _, c in ipairs(self.cycles) do
-                    if c.key == 'CUSTOM_SHIFT_Y' then
+                    if c.key == 'CUSTOM_SHIFT_R' then
                         for i, opt in ipairs(c.state.options) do
                             if opt.value == current_perf then c.state.idx = i; c.widget:setText(c.get_display_text()); break end
                         end; break
@@ -166,35 +246,180 @@ function RefinishPanelConfig:init()
         }:show()
     end)
 
-    self.w_msg = make_themed_cycle(16, 'CUSTOM_SHIFT_I', 'Invasiveness:', {
-        {label = 'Guided', value = 'GUIDED', pen = C_VAL}, {label = 'Passive', value = 'PASSIVE', pen = self.theme.RISK_L},
-        {label = 'Silent', value = 'SILENT', pen = self.theme.RISK_M}, {label = 'Debug', value = 'DEBUG', pen = C_NEG},
+    -- ---- TURNED DOWN, NOT AT RISK ----
+    -- Passive and Silent turn the mod's notices down, as Relaxed turns the
+    -- grind watcher down and NO DUST and the lower Byproduct Rates turn
+    -- byproducts down, so all of them wear Tertiary. Passive and Relaxed
+    -- wore Caution, and Silent Warning, until 2026-10-14, as settings
+    -- thought to carry risk; the hot colours are for faults alone
+    -- (refinish-panel-log.lua, EVERY VERDICT HAS ITS OWN COLOUR).
+    self.w_msg = make_themed_cycle(12, 'CUSTOM_SHIFT_T', 'Invasiveness:', {
+        {label = 'Guided', value = 'GUIDED', pen = C_VAL}, {label = 'Passive', value = 'PASSIVE', pen = self.theme.TER},
+        {label = 'Silent', value = 'SILENT', pen = self.theme.TER}, {label = 'Debug', value = 'DEBUG', pen = C_NEG},
     }, 'refinish_config_msg', 'GUIDED')
 
-    self.w_protect = make_themed_cycle(18, 'CUSTOM_SHIFT_O', 'Protect Bases:', {
+    self.w_protect = make_themed_cycle(14, 'CUSTOM_SHIFT_Y', 'Protect Bases:', {
         {label = 'Yes', value = 'YES', pen = C_VAL}, {label = 'No', value = 'NO', pen = C_NEG},
-    }, 'refinish_config_protect', 'YES')
+    }, 'refinish_config_protect', current_protect, function(val, state)
+        RefinishPrompt{
+            text = "Changing this configuration will cancel all active jobs involving Refinish Metal materials and trigger data cycling.\n\nAre you sure you want to proceed?",
+            text_pen = self.theme.PRI,
+            on_yes = function()
+                current_protect = val
+                -- INFO: a setting the player changed, and why the data
+                -- cycle that follows ran.
+                log('INFO', 'Base protection set to ' .. tostring(val)
+                    .. '. Triggering a data cycle.', 'PROTECT')
+                dfhack.run_script('refinish-hard-shutdown', 'SILENT')
+                dfhack.run_script('refinish-startup', 'SILENT')
+                local jobs_killed = _G.refinish_last_jobs_canceled or 0; _G.refinish_last_jobs_canceled = nil
+                local msg_setting = get_pref('refinish_config_msg', 'GUIDED')
+                if msg_setting == 'GUIDED' or msg_setting == 'DEBUG' then
+                    local action_txt = (val == 'YES')
+                        and "on: the metal grinder leaves your selected base metals alone."
+                        or "off: the metal grinder takes your selected base metals too."
+                    local debug_txt = (msg_setting == 'DEBUG') and ("\n\n[DEBUG: Protect Bases toggled to " .. val .. ". " .. jobs_killed .. " jobs canceled.]") or ""
+                    RefinishPrompt{ frame_h = (msg_setting == 'DEBUG') and 18 or 12, text = "Base protection is now " .. action_txt .. debug_txt, text_pen = self.theme.PRI, on_ok = function() end }:show()
+                elseif msg_setting == 'PASSIVE' then
+                    dfhack.gui.showAnnouncement('Refinish Metal: RAM cycled successfully.', self.theme.PRI, true)
+                end
+            end,
+            on_no = function()
+                dfhack.persistent.saveSiteData('refinish_config_protect', current_protect)
+                for _, c in ipairs(self.cycles) do
+                    if c.key == 'CUSTOM_SHIFT_Y' then
+                        for i, opt in ipairs(c.state.options) do
+                            if opt.value == current_protect then c.state.idx = i; c.widget:setText(c.get_display_text()); break end
+                        end; break
+                    end
+                end
+            end
+        }:show()
+    end)
 
-    -- Polling Rate: Controls how frequently the reaction watcher and
-    -- UI monitor loops fire. Lower values = more responsive but heavier
-    -- on the CPU. Large forts benefit from relaxed polling.
-    self.w_poll = make_themed_cycle(20, 'CUSTOM_SHIFT_U', 'Polling Rate:', {
+    -- ---- UI LOG VERBOSITY ----
+    -- Display only. The session file on disk is always debug-verbose,
+    -- because a setting that reduces what gets RECORDED is a setting
+    -- that loses the one line you needed.
+    --
+    -- Filters on the TYPE tag, which the emitter already declares and
+    -- which already drives the colour, so one classification serves
+    -- both and no module has to supply anything new.
+    -- LEVELS (2026-10-07): Quiet, Info and Debug, Quiet the default and
+    -- so in the ordinary value colour, no longer the caution colour.
+    -- Info was Normal: a world still holding 'NORMAL' shows the first
+    -- row, Quiet, and refinish-panel-log.lua reads it as Quiet too.
+    self.w_loglevel = make_themed_cycle(16, 'CUSTOM_SHIFT_U', 'Log Detail:', {
+        {label = 'Quiet',  value = 'QUIET',  pen = C_VAL},
+        {label = 'Info',   value = 'INFO',   pen = C_VAL},
+        {label = 'Debug',  value = 'DEBUG',  pen = C_NEG},
+    }, 'refinish_config_log', 'QUIET', function()
+        -- Bumped so the log panel notices without polling the
+        -- persistent store every frame. make_themed_cycle already
+        -- saves the value before calling this.
+        _G.refinish_log_filter_gen = (_G.refinish_log_filter_gen or 0) + 1
+    end)
+
+    -- ---- POLLING RATE ----
+    -- How often the JIT grind watcher in refinish_steel.lua runs
+    -- (get_poll_frames there: Fast 10 frames, Normal 25, Relaxed 50). It
+    -- names each grind job for what is being ground and, with Protect
+    -- Bases on, cancels a grind that took a protected base metal. Read at
+    -- every pass, so a change needs no data cycle. A slower rate costs
+    -- less CPU, which a large fort may want, and does both a little later.
+    -- Nothing else reads it: the save hook's monitor runs every frame and
+    -- the calendar every 1000 frames. Until 2026-10-13 the comment here
+    -- said it paced the UI monitor loops too.
+    self.w_poll = make_themed_cycle(8, 'CUSTOM_SHIFT_E', 'Polling Rate:', {
         {label = 'Fast',    value = 'FAST',    pen = C_VAL},
         {label = 'Normal',  value = 'NORMAL',  pen = C_VAL},
-        {label = 'Relaxed', value = 'RELAXED', pen = self.theme.RISK_L},
+        -- Tertiary, as Passive and Silent are (TURNED DOWN, NOT AT RISK).
+        {label = 'Relaxed', value = 'RELAXED', pen = self.theme.TER},
     }, 'refinish_config_poll_rate', 'FAST')
+
+    -- ---- BYPRODUCTS ----
+    -- refinish-job-byproducts.lua reads this at every job it pays (THE
+    -- SWITCH there), so a change applies to the next job with no data
+    -- cycle, and it needs none of the prompts the rows above use.
+    --   ON       every byproduct, RM's dust and every module's.
+    --   NO DUST  every byproduct but dust. Dust's share of a loss is not
+    --            handed to anything else.
+    --   OFF      no byproducts at all.
+    -- RM core pays one byproduct of its own, dust, so one row covers it
+    -- (two rows, Byproducts and Byproduct Dust, until 2026-10-03).
+    -- Grinders and crushers are orders, not byproducts, and make dust
+    -- whatever this says.
+    self.w_byproducts = make_themed_cycle(18, 'CUSTOM_SHIFT_I', 'Byproducts:', {
+        {label = 'ON', value = 'ON', pen = C_VAL},
+        {label = 'NO DUST', value = 'NO_DUST', pen = self.theme.TER},
+        {label = 'OFF', value = 'OFF', pen = C_NEG},
+    }, 'refinish_config_byproducts', 'ON', function(val)
+        -- INFO: a setting the player changed.
+        local paid = { ON = 'every byproduct is paid', NO_DUST = 'every byproduct but dust is paid',
+                       OFF = 'no byproduct is paid' }
+        log('INFO', ('Byproducts set to %s: %s from the next job.'):format(tostring(val),
+            paid[val] or 'an unknown setting, read as ON'), 'BYPRODUCTS')
+    end)
+
+    -- ---- BYPRODUCT RATE ----
+    -- One multiplier on every byproduct paid, RM's dust and every module's
+    -- streams alike, added 2026-10-07 so players can turn the output down
+    -- while the recovery rates are still being tuned. Read by
+    -- refinish-job-byproducts.lua at every job it pays (THE RATE there),
+    -- so a change applies to the next job with no data cycle. It scales
+    -- what each stream is paid, never the split between streams. Grinders
+    -- and crushers are orders, not byproducts, and are not scaled. Stored
+    -- as the percentage, a string; no value, or one the service does not
+    -- know, reads as 100. On O, the next key in the QWERTYUIOP run, so the
+    -- keys still read in order down the column and Restore moves to P.
+    self.w_byproduct_rate = make_themed_cycle(20, 'CUSTOM_SHIFT_O', 'Byproduct Rate:', {
+        {label = '100%', value = '100', pen = C_VAL},
+        {label = '75%',  value = '75',  pen = self.theme.TER},
+        {label = '50%',  value = '50',  pen = self.theme.TER},
+        {label = '25%',  value = '25',  pen = self.theme.TER},
+        {label = '10%',  value = '10',  pen = self.theme.TER},
+    }, 'refinish_config_byproduct_rate', '100', function(val)
+        -- INFO: a setting the player changed.
+        log('INFO', ('Byproduct rate set to %s%%: every byproduct pays that share of'
+            .. ' its measured amount from the next job.'):format(tostring(val)), 'BYPRODUCTS')
+    end)
 
     -- ==========================================
     -- RESTORE DEFAULTS
     -- ==========================================
+    -- The last row of the column, so it takes the next key in the
+    -- QWERTYUIOP run (it sat on the plus sign, STRING_A043, until the
+    -- rows were compacted, then on I until Byproducts took I, then on O
+    -- until Byproduct Rate took O).
     self.actions.CUSTOM_SHIFT_P = function()
-        RefinishPrompt{ text = "Are you sure you want to revert all configurations to their original defaults?", text_pen = self.theme.PRI,
+        -- ---- THE DATA CYCLE TWO DEFAULTS NEED ----
+        -- Material Finishes and Protect Bases take effect through a data
+        -- cycle (their rows above), so a restore that moves either one runs
+        -- the same hard shutdown and startup once it has written the
+        -- defaults, and its prompt says so first. Until 2026-10-14 it only
+        -- wrote them: the panel showed the defaults while the loaded game
+        -- kept the old state until the next load or data cycle. Asked at
+        -- the key press for the prompt, and again on Yes, before the
+        -- defaults are written over the values it reads.
+        local function moves_cycled()
+            return get_pref('refinish_config_perf', 'ON') ~= 'ON'
+                or get_pref('refinish_config_protect', 'NO') ~= 'NO'
+        end
+        local cycle_note = moves_cycled() and "\n\nMaterial Finishes or Protect Bases changes with them, so this will also cancel all active jobs involving Refinish Metal materials and trigger data cycling." or ""
+        -- 14 rows, not the default 12, to fit the note.
+        RefinishPrompt{ frame_h = (cycle_note ~= "") and 14 or nil, text = "Are you sure you want to revert all configurations to their original defaults?" .. cycle_note, text_pen = self.theme.PRI,
             on_yes = function()
+                local cycle = moves_cycled()
                 for _, kv in ipairs({
-                    {'refinish_config_interval','SEASONAL'}, {'refinish_config_save_protocol','AUTOSAVE'}, {'refinish_config_pause','YES'},
-                    {'refinish_config_esc','AUTO'}, {'refinish_config_delay','TICK'}, {'refinish_config_msg','GUIDED'},
-                    {'refinish_config_protect','YES'}, {'refinish_config_perf','ON'},
+                    {'refinish_config_interval','SEASONAL'}, {'refinish_config_pause','YES'},
+                    -- SAVE PROTOCOL OPTION (removed): {'refinish_config_save_protocol','AUTOSAVE'},
+                    -- LOAD DELAY OPTION (removed): {'refinish_config_delay','NONE'},
+                    -- MENU DATA CYCLE OPTION (removed): {'refinish_config_esc','AUTO'},
+                    {'refinish_config_msg','GUIDED'},
+                    {'refinish_config_protect','NO'}, {'refinish_config_perf','ON'},
                     {'refinish_config_poll_rate','FAST'},
+                    {'refinish_config_log','QUIET'},
+                    {'refinish_config_byproducts','ON'}, {'refinish_config_byproduct_rate','100'},
                     {'refinish_theme_pri','LIGHTGREEN'}, {'refinish_theme_sec','LIGHTBLUE'}, {'refinish_theme_ter','CYAN'},
                     {'refinish_theme_neutral_b','WHITE'}, {'refinish_theme_neutral_s','DARKGREY'},
                     {'refinish_theme_risk_l','YELLOW'}, {'refinish_theme_risk_m','LIGHTRED'}, {'refinish_theme_risk_h','RED'},
@@ -209,8 +434,32 @@ function RefinishPanelConfig:init()
                 safe_rebind(hk_help,'Ctrl-Shift-H','refinish-hud show help'); safe_rebind(hk_autosave,'Ctrl-Shift-S','refinish-autosave')
                 safe_rebind(hk_wipe,'Ctrl-Shift-X','refinish-shutdown'); safe_rebind(hk_startup,'Ctrl-Alt-X','refinish-startup')
                 safe_rebind(hk_hardwipe,'Ctrl-Shift-Q','refinish-hard-shutdown')
+                -- ---- THE CYCLE, AS THE ROWS RUN IT ----
+                -- INFO: a change the player made, and why a data cycle
+                -- followed it.
+                log('INFO', 'Default settings restored.' .. (cycle and ' Material Finishes or'
+                    .. ' Protect Bases changed with them. Triggering a data cycle.' or ''), 'RESTORE')
+                local jobs_killed = 0
+                if cycle then
+                    dfhack.run_script('refinish-hard-shutdown', 'SILENT')
+                    dfhack.run_script('refinish-startup', 'SILENT')
+                    jobs_killed = _G.refinish_last_jobs_canceled or 0; _G.refinish_last_jobs_canceled = nil
+                end
                 if _G.refinish_hud_view then _G.refinish_hud_view:dismiss() end
                 dfhack.run_script('refinish-hud', 'show', 'config')
+                -- The report goes on top of the rebuilt panel, in the
+                -- restored theme (the prompt reads it as it is drawn) and by
+                -- the restored Invasiveness, as each row reports its cycle.
+                if cycle then
+                    local msg_setting = get_pref('refinish_config_msg', 'GUIDED')
+                    if msg_setting == 'GUIDED' or msg_setting == 'DEBUG' then
+                        local debug_txt = (msg_setting == 'DEBUG') and ("\n\n[DEBUG: Material Finishes ON, Protect Bases NO. " .. jobs_killed .. " jobs canceled.]") or ""
+                        RefinishPrompt{ frame_h = (msg_setting == 'DEBUG') and 16 or 12, text = "Defaults restored, and the data cycled: material finishes are in active RAM, and the metal grinder takes your selected base metals too." .. debug_txt, on_ok = function() end }:show()
+                    elseif msg_setting == 'PASSIVE' then
+                        dfhack.gui.showAnnouncement('Refinish Metal: RAM cycled successfully.',
+                            reqscript('refinish-theme').get_current_theme().PRI, true)
+                    end
+                end
             end }:show()
     end
 
@@ -293,7 +542,7 @@ function RefinishPanelConfig:init()
     self.w_theme_ns  = make_theme_picker(44, 'STRING_A037', 'Neutral Soft:','refinish_theme_neutral_s', 'DARKGREY')
     self.w_theme_rl  = make_theme_picker(45, 'STRING_A094', 'Caution:',     'refinish_theme_risk_l',    'YELLOW')
     self.w_theme_rm  = make_theme_picker(46, 'STRING_A038', 'Warning:',     'refinish_theme_risk_m',    'LIGHTRED')
-    self.w_theme_rh  = make_theme_picker(47, 'STRING_A094', 'Danger:',      'refinish_theme_risk_h',    'RED')
+    self.w_theme_rh  = make_theme_picker(47, 'STRING_A042', 'Danger:',      'refinish_theme_risk_h',    'RED')
 
     -- ==========================================
     -- TOOLTIP HELPER
@@ -309,8 +558,12 @@ function RefinishPanelConfig:init()
     local views = {
         widgets.Label{ frame = {t = 0, l = 0}, text = "CONFIGURATION", text_pen = self.theme.PRI },
         widgets.Label{ frame = {t = 2, l = 0}, text = "SYSTEM SETTINGS", text_pen = self.theme.NEUTRAL_B },
-        self.w_autosave, self.w_pause, self.w_save_protocol, self.w_menu, self.w_delay,
-        self.w_perf, self.w_msg, self.w_protect, self.w_poll, self.btn_restore,
+        -- LOAD DELAY OPTION (removed): self.w_delay
+        -- MENU DATA CYCLE OPTION (removed): self.w_menu
+        -- SAVE PROTOCOL OPTION (removed): self.w_save_protocol
+        self.w_autosave, self.w_pause,
+        self.w_perf, self.w_msg, self.w_protect, self.w_poll,
+        self.w_loglevel, self.w_byproducts, self.w_byproduct_rate, self.btn_restore,
         widgets.Label{ frame = {t = 24, l = 0}, text = "UI NAVIGATION HOTKEYS", text_pen = self.theme.NEUTRAL_B },
     }
     for _, hw in ipairs(hk_widgets) do table.insert(views, hw) end
@@ -322,41 +575,49 @@ function RefinishPanelConfig:init()
     table.insert(views, widgets.Panel{ frame = {t = 0, l = 34, r = 0, b = 0}, subviews = {
         widgets.Label{ frame = {t = 0, l = 0}, text = "INFORMATION", text_pen = self.theme.PRI },
         bind_tooltip(self.w_autosave, "Autosave Interval",
-            "How often the mod performs a full save cycle. In-game options trigger on season/year boundaries. Real-time options use wall-clock minutes regardless of game speed. 'Off' disables automatic saves entirely; use the quicksave hotkey to save manually."),
-        bind_tooltip(self.w_pause, "Pause on Autosave",
-            "When enabled, the simulation is paused at the start of each autosave cycle. This prevents dwarves from starting new workshop jobs or building constructions while the RAM is being purged, eliminating a class of edge-case race conditions. Recommended: Yes."),
-        bind_tooltip(self.w_save_protocol, "Save Protocol",
-            "Hotsave performs a lightweight in-place cycle: purge RAM, quicksave, restore RAM. It is fast but does not write a full JSON payload to site data; finish records are held in memory only. Autosave (Legacy) performs the full JSON wash cycle used by the autosave routine, writing all finish data to disk before saving. Use Autosave if you want full payload persistence on every manual save."),
-        bind_tooltip(self.w_menu, "Menu-Bound Data Cycle",
-            "Controls how mod data is handled when the ESC Options menu is opened. Auto purges RAM the moment the menu opens and reloads it on close, ensuring vanilla Save and Save & Continue buttons are always safe to use. Manual leaves data loaded for faster menu performance, but requires a manual shutdown before using any vanilla save options. Recommended for large forts: Manual."),
-        bind_tooltip(self.w_delay, "Startup Load Delay",
-            "Controls when mod data is injected into RAM after a map loads. '1 Tick' waits for the player to unpause the game, giving the engine time to fully settle after a heavy load. Faster options inject while the game is still paused. Non-Tick options may cause instability on large saves or heavily modded worlds and are not recommended."),
+            "How often the mod runs its full save cycle. Seasonal saves at every season change, Semi-Annual at the start of spring and autumn, and Yearly at each new year. The real-time options count wall-clock minutes, whatever the game speed. Off means no autosaves at all, because the mod switches vanilla's autosave off while it is loaded; save with the quicksave hotkey or the game's own save, both of which are safe."),
+        bind_tooltip(self.w_pause, "Pause on Save",
+            "The simulation is always paused while an autosave cycle runs, because no game tick may pass while Refinish Metal's data is out of RAM. This setting decides what happens after: Yes leaves the game paused when the cycle ends; No resumes it by itself if it was running."),
+        -- SAVE PROTOCOL OPTION (removed): its tooltip went with it.
+        -- MENU DATA CYCLE OPTION (removed): its tooltip went with it.
+        -- LOAD DELAY OPTION (removed). Tooltip text kept for reference;
+        -- note that its advice was backwards, which is how the window
+        -- stayed open as long as it did.
+        -- bind_tooltip(self.w_delay, "Startup Load Delay",
+        --     "Controls when mod data is injected into RAM after a map loads. '1 Tick' waits for the player to unpause the game, giving the engine time to fully settle after a heavy load. Faster options inject while the game is still paused. Non-Tick options may cause instability on large saves or heavily modded worlds and are not recommended."),
         bind_tooltip(self.w_perf, "Material Finishes",
-            "When ON, the scanner generates a unique 1:1 named finish for every valid reagent in the world; e.g. 'obsidian steel', 'malachite iron'. When OFF, only condensed Colour Finishes and hardcoded Special Finishes are generated, significantly reducing the total number of injected materials and reactions. Toggling this mid-game cancels active jobs and triggers a full data cycle. Existing Material Finish data is preserved in the JSON payload and restored if the setting is turned back ON."),
+            "When ON, a finish is also made for each material a dust is ground from, named for it (e.g. 'obsidian steel'); materials whose names give the same finish share one. When OFF, only Colour Finishes and the named Special Finishes are made. Either way, a finish is made only once your fort has had both its base metal's bars and the dust. Changing this mid-game cancels active Refinish Metal jobs and runs a full data cycle. While it is OFF, items in a material finish wait on their base metal and get the finish back when it is ON again."),
         bind_tooltip(self.w_msg, "System Invasiveness",
-            "Controls how the mod communicates with you during background operations. Guided shows confirmation prompts and post-cycle telemetry reports. Passive sends cycle results to the announcement log without interrupting gameplay. Silent suppresses all non-critical output. Debug adds internal timing data and diagnostic detail to every prompt and log entry."),
+            "How the mod tells you about its work.\n\nGuided, the default: a prompt says Refinish Metal is online at each load; the startup, shutdown and hard shutdown hotkeys ask before they run; and a prompt reports what they did, and what a data cycle run by a setting did.\n\nPassive: results go to the announcements instead of prompts, and the shutdown and hard shutdown hotkeys run without asking.\n\nSilent: nothing about the mod's own work, the autosave's completion notice included, and the shutdown and hard shutdown hotkeys run without asking.\n\nDebug: Guided, with timings and counts in its prompts, and a prompt before each autosave's quicksave.\n\nAt every level the startup hotkey and any setting that runs a data cycle ask first, every level but Silent announces each autosave, and alerts and warnings always show. What the event log shows is set by Log Detail, not here."),
         bind_tooltip(self.w_protect, "Protect Base Metals",
-            "When enabled, dwarves assigned a generic metal grinding job will refuse to pick up bars of any metal currently configured as an active base. The job is canceled and an announcement is generated. Finished bars of any base metal are always protected regardless of this setting."),
+            "Set to Yes, the metal grinder also leaves your active base metals alone, and a dwarf about to grind one cancels the job with an announcement. It never takes finished metals either way: finished bars are ground in the Grind finished metals folder, one grinder per base metal. This is No by default, because with every base metal active it would stop all metal grinding. Changing it runs a full data cycle."),
+        bind_tooltip(self.w_loglevel, "Log Detail",
+            "What the event log panel shows. The session log file on disk keeps every line whatever this is set to, so turning it down never loses anything.\n\nQuiet, the default: faults, from fatal errors to warnings and suspect results, plus completions and session milestones, so every fault is easy to find.\n\nInfo: everything but per-item debugging detail, so ordinary activity and yields as well.\n\nDebug: everything.\n\nA line that never said what kind it is shows as UNTYPED at every level: that is a fault in the code that wrote it."),
+
         bind_tooltip(self.w_poll, "Polling Rate",
-            "Controls how frequently the reaction watcher and UI monitor fire. Fast (10 frames) is the most responsive but uses the most CPU. Normal (25 frames) is a good balance. Relaxed (50 frames) reduces CPU load on large forts at the cost of slightly delayed reaction detection. The calendar loop is unaffected."),
+            "How often the grind job watcher looks for new grind jobs to name for what is being ground. Fast (every 10 frames, the default) answers soonest and costs the most CPU; Normal (25 frames) is a balance; Relaxed (50 frames) costs the least, and a job may show its generic name a little longer. With Protect Bases on, the same watcher cancels a grind that took a protected base metal, so a slower rate cancels it a little later too. The mod's other monitors keep their own pace."),
+        bind_tooltip(self.w_byproducts, "Byproducts",
+            "A job that destroys material pays part of it back where it was worked, measured from what the job actually used: Refinish Metal's dust, its gravel and slag when a module asks for them, and the byproducts installed modules declare. ON pays them all. NO DUST pays everything but dust, Refinish Metal's or a module's; dust's share of each loss is simply not recovered. OFF pays nothing and measures nothing, and that material is lost, as in vanilla. Grinding and crushing still make dust, since those are orders rather than byproducts. Applies from the next job, with no data cycle; amounts already counted toward an item are kept."),
+        bind_tooltip(self.w_byproduct_rate, "Byproduct Rate",
+            "Scales every byproduct a job pays, Refinish Metal's own and every module's alike: 100% pays the full measured share, 10% a tenth of it. It is there to turn the output down while the recovery rates are still being tuned. What is too small for a whole item still banks toward the next one, so a low rate slows output rather than stopping it. Grinding and crushing are orders, not byproducts, and keep their full yield. Applies from the next job, with no data cycle."),
         bind_tooltip(self.btn_restore, "Restore Default Settings",
-            "Resets every configuration value and all hotkey bindings to their original defaults. This includes autosave interval, save protocol, pause behavior, menu cycling, load delay, material finishes, invasiveness, base metal protection, all theme colours, and all eleven global hotkeys. A confirmation prompt will appear before any changes are applied."),
+            "Resets every configuration value and all hotkey bindings to their original defaults: autosave interval, pause on save, material finishes, invasiveness, base metal protection, polling rate, log detail, byproducts, byproduct rate, all theme colours, and all eleven global hotkeys. A confirmation prompt appears before anything changes. If material finishes or base metal protection changes with the restore, it also cancels active Refinish Metal jobs and runs a full data cycle, as those settings do."),
         bind_tooltip(self.w_theme_pri, "Primary Colour",
             "The dominant foreground colour. Used for panel headers, active/selected values in cycle widgets, hotkey key labels, and confirmation prompt text."),
         bind_tooltip(self.w_theme_sec, "Secondary Colour",
             "The standard body text colour. Used for list entries, cycle widget labels, button text, and most informational labels throughout the UI."),
         bind_tooltip(self.w_theme_ter, "Tertiary Colour",
-            "A general-purpose accent colour. Used for pipeline lifecycle events in the log, and as a third foreground colour wherever Primary and Secondary are already in use."),
+            "A general-purpose accent colour. Used for DETAIL lines in the event log, the debug output shown at the Debug log level; for the Origin line the Inspect panel gives Refinish Metal's own materials and reactions; and on this page for the settings that turn output down without turning it off: NO DUST and Byproduct Rates under 100%."),
         bind_tooltip(self.w_theme_nb, "Neutral Bold",
-            "Used for section divider headers such as 'SYSTEM SETTINGS', 'UI NAVIGATION HOTKEYS', and 'THEME COLOURS'."),
+            "Used for section headers such as 'SYSTEM SETTINGS', 'UI NAVIGATION HOTKEYS' and 'THEME COLOURS', for the event log's cursor, and in the Base Metals list for a selected metal your civilization does not know."),
         bind_tooltip(self.w_theme_ns, "Neutral Soft",
-            "A secondary neutral used for visual separation elements, subdued dividers, and de-emphasized structural labels."),
+            "Used in the Base Metals list for a metal your civilization does not know, while it is not selected, and for a metal no civilization can make, marked with an asterisk."),
         bind_tooltip(self.w_theme_rl, "Caution",
-            "Used for low-severity alerts; confirmation prompts, advisory notices, and settings that carry a minor risk such as non-default load delay options."),
+            "Used for low-severity notices, such as a dwarf cancelling a grind of a protected base metal, the notice that the mod's script files can be found again, the hard shutdown's warning before it cancels jobs, and a loop costing 2 percent of the machine's time or more in the status panel."),
         bind_tooltip(self.w_theme_rm, "Warning",
-            "Used for mid-severity notices; safety announcements, the ESC menu overlay when mod data is active, and settings that carry meaningful risk such as the Silent invasiveness mode."),
+            "Used for mid-severity notices, such as the one after a map unload that had to use the mod's kept copies of its scripts, a module whose settings were refused, a failed diagnostic dump, and a loop costing a tenth of the machine's time or more in the status panel."),
         bind_tooltip(self.w_theme_rh, "Danger",
-            "Used for high-severity states; critical failures, fatal RAM errors, and the strongest safety warnings in the system. Appears in the ESC overlay when conditions for guaranteed save corruption are present."),
+            "Used for high-severity states: critical failures, the alarm when the mod's script files go missing while the game runs, and the notice when the mod could not take its data out of memory as a map unloaded."),
     }})
     self:addviews(views)
 end

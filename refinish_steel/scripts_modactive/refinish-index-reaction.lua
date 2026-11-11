@@ -2,10 +2,51 @@
 -- ==========================================
 -- SCRIPT LOGIC: REACTION & CATEGORY BUILDER
 -- ==========================================
-print("==================================================")
-print("REFINISH STEEL: INITIATING REACTION INJECTION")
-print("==================================================")
-if _G.refinish_log_event then _G.refinish_log_event("INDEX RXN: Reaction and Category injection sequence initiated.") end -- ADDED LOG
+
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the step or thing a line is
+-- about. Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'INDEX_REACTIONS'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
+log('DETAIL', 'Reaction and category injection initiated.')
 
 -- STATE MANAGER: Deep RAM Verification
 if _G.refinish_reactions_loaded == nil or _G.refinish_reactions_loaded == false then
@@ -18,8 +59,7 @@ if _G.refinish_reactions_loaded == nil or _G.refinish_reactions_loaded == false 
 end
 
 if _G.refinish_reactions_loaded then
-    print("Refinish Metal: Reactions already indexed. Skipping.")
-    if _G.refinish_log_event then _G.refinish_log_event("INDEX RXN: Reactions already indexed. Skipping.") end -- ADDED LOG
+    log('DETAIL', 'Reactions already indexed. Skipping.')
     return
 end
 
@@ -27,14 +67,20 @@ local reactions_array = df.global.world.raws.reactions.reactions
 local cat_array = df.global.world.raws.reactions.reaction_categories
 
 if not _G.refinish_blueprint or not _G.refinish_blueprint.reactions then
-    print("Refinish Metal ERROR: Blueprint missing. Run 'refinish-scan' first.")
-    if _G.refinish_log_event then _G.refinish_log_event("INDEX RXN ERROR: Blueprint missing. Run 'refinish-scan' first.") end -- ADDED LOG
+    log('ERROR', 'Blueprint missing, so no refinish reactions were built.'
+        .. ' refinish-scan has to run first.')
     return
 end
 
 -- ==========================================
 -- 1. DYNAMIC CATEGORY INJECTION (DEPTH MAPPED)
 -- ==========================================
+
+-- THE LOAD CLOCK (refinish-startup.lua): nil outside a pipeline run.
+-- The colour reactions' new and assign are summed on their own.
+local LC = _G.refinish_load_clock
+local t_xr = LC and LC.now()
+local s_rassign = 0
 
 -- PRE-BUILD: Snapshot every category ID already in the live array ONCE
 -- before we start injecting. This replaces the O(N) linear scan that the
@@ -119,6 +165,13 @@ for _, cat in ipairs(pending_cats) do
     inject_category(cat.id, cat.name, cat.parent)
 end
 
+-- The finished-metal grinders' folder at the quern and the millstone
+-- (refinish-mint-finish.lua, THE FINISHED-METAL GRINDERS). Made every
+-- cycle; refinish-clear-reaction.lua takes it off with every
+-- REFINISH_STEEL_CAT_ category. A workshop lists a category only when a
+-- reaction there is filed under it, so it shows once a grinder is.
+inject_category("REFINISH_STEEL_CAT_GRIND_FINISHED", "Grind finished metals", "")
+
 -- ==========================================
 -- 2. TEMPLATE ACQUISITION (FROM BOOT CACHE)
 -- ==========================================
@@ -170,21 +223,32 @@ if dust_cache and dust_cache.reaction then
 end
 
 if not metal_rxn or not powder_rxn then
-    print("Refinish Metal ERROR: Missing cached engine templates. Cannot synthesize reactions.")
-    if _G.refinish_log_event then 
-        _G.refinish_log_event(string.format("INDEX RXN ERROR: Missing cached templates. Metal: %s, Powder: %s", 
-            tostring(metal_rxn ~= nil), tostring(powder_rxn ~= nil))) 
-    end
+    log('ERROR', string.format('Missing cached engine templates (metal: %s,'
+        .. ' powder: %s), so no refinish reactions were built.',
+        tostring(metal_rxn ~= nil), tostring(powder_rxn ~= nil)), 'TEMPLATES')
     return
 else
-    print(string.format("Refinish Metal: Cached Shells Acquired."))
-    print(string.format("  -> Metal Shell: %s (Reagent: %d, Product: %d)", metal_rxn.code, metal_rgt_idx, metal_prod_idx))
-    print(string.format("  -> Powder Shell: %s (Bag: %d, Product: %d)", powder_rxn.code, powder_bag_idx, powder_prod_idx))
-    
-    if _G.refinish_log_event then 
-        _G.refinish_log_event(string.format("INDEX RXN: Cached Shells Acquired -> Metal: %s (R:%d, P:%d) | Powder: %s (R:%d, P:%d)", 
-            metal_rxn.code, metal_rgt_idx, metal_prod_idx, powder_rxn.code, powder_bag_idx, powder_prod_idx)) 
-    end
+    log('DETAIL', string.format('Cached shells acquired. Metal: %s (R:%d,'
+        .. ' P:%d) | Powder: %s (R:%d, P:%d)', metal_rxn.code, metal_rgt_idx,
+        metal_prod_idx, powder_rxn.code, powder_bag_idx, powder_prod_idx),
+        'TEMPLATES')
+end
+
+-- ---- RM'S DUST TOOL ----
+-- Refinish reactions take one of these and the grinders make them. It
+-- is injected by RM's core payload through the module engine, which
+-- runs before this file does. Without it there is no dust to take, so
+-- no refinish reaction or grinder is built, and the log says why. The
+-- next data cycle tries again.
+local DUST_TOOL = "REFINISH_CORE_DUST"
+local dust_subtype = nil
+for _, td in ipairs(df.global.world.raws.itemdefs.tools) do
+    if td.id == DUST_TOOL then dust_subtype = td.subtype break end
+end
+if not dust_subtype then
+    log('ERROR', DUST_TOOL .. ' is not injected, so no refinish reaction or'
+        .. ' grinder was built. See refinish-core-payload.', 'TEMPLATES')
+    return
 end
 
 -- Build the Virtual Template from the dynamically acquired metal reaction
@@ -193,6 +257,20 @@ template_rxn:assign(metal_rxn)
 
 template_rxn.code = "VIRTUAL_REFINISH_TEMPLATE"
 template_rxn.name = "virtual refinish template"
+
+-- ---- THE TEMPLATE'S IDENTITY, LEFT BEHIND ----
+-- assign copies the metal reaction's descriptions and raw strings as
+-- vectors of pointers to that reaction's own objects, and every finish
+-- reaction is copied from this one, at load and in play. Until 2026-10-03
+-- every finish showed the metal reaction's description in the task pane
+-- (argmod's hardsteel, in region4). resize(0) drops the pointers and
+-- leaves the objects to the reaction that owns them. The same reset the
+-- module engine gives its clones (refinish-module-react.lua, STEP 2.5,
+-- template identity baggage).
+template_rxn.raw_strings:resize(0)
+template_rxn.descriptions:resize(0)
+template_rxn.source_hfid = -1
+template_rxn.source_enid = -1
 
 -- THE FIX: Hardcode the fuel flag to true so all finishes demand fuel. 
 -- The engine will automatically ignore this flag if the task is run at a Magma Forge.
@@ -218,32 +296,32 @@ r_steel.mat_type = 0
 r_steel.mat_index = SAFE_INDEX 
 template_rxn.reagents:insert('#', r_steel)
 
--- 2. The Dust (Synthesized into true Powder)
+-- ---- WHAT THE POWDER DUST NEEDED (kept for anyone building a
+-- powder in a bag again) ----
+-- Before 2026-09-25 the dust was POWDER_MISC in a bag, and three things
+-- had to be true or the reaction never ran, each found by probe:
+--   * item_type 70 is POWDER_MISC, and a powder reagent takes 150 units.
+--   * THE MISSING LINK: the powder reagent MUST carry IN_CONTAINER, or
+--     nothing will accept the dust as sitting in a bag.
+--   * The bag reagent (cloned from the evaluated powder shell) had its
+--     EMPTY bit cleared (flags1.empty = false) so it was allowed to hold
+--     the dust, and its contains list pointed at the dust reagent's
+--     index.
+-- 2. The Dust: one of RM's dust tools, in the reagent's own material,
+--    which each reaction pins below. Six dust finish the three bars, two
+--    a bar, whatever the dust was ground from (2026-10-03; one dust of
+--    the old unit until then). No
+--    bag: dust is a tool now, not a powder, so nothing holds it.
 local r_dust = df.reaction_reagent_itemst:new()
 r_dust:assign(metal_rxn.reagents[metal_rgt_idx]) -- Clone the basic item shape
 r_dust.code = "dust"
-r_dust.item_type = 70 -- PROBE TRUTH: 70 is POWDER_MISC
-r_dust.quantity = 150 -- PROBE TRUTH: Powders use 150 qty
-r_dust.min_dimension = -1 
+r_dust.item_type = df.item_type.TOOL
+r_dust.item_subtype = dust_subtype
+r_dust.quantity = 6 -- two dust a bar, the same for every dust
+r_dust.min_dimension = -1
 r_dust.mat_type = 0
-r_dust.mat_index = -1 
-
--- THE MISSING LINK: The powder MUST be flagged to accept containers
-r_dust.flags.IN_CONTAINER = true 
-
+r_dust.mat_index = -1
 template_rxn.reagents:insert('#', r_dust)
-
--- 3. THE BAG (Cloned from the dynamically found bag reagent)
-local r_bag = df.reaction_reagent_itemst:new()
-r_bag:assign(powder_rxn.reagents[powder_bag_idx])
-r_bag.code = "dust_bag"
-
--- Nuke the EMPTY bitfield so the bag is allowed to contain our dust
-r_bag.flags1.empty = false
-
-r_bag.contains:resize(0)
-r_bag.contains:insert('#', 1) -- Points exactly to Reagent [1] (Our Dust)
-template_rxn.reagents:insert('#', r_bag)
 
 -- ==========================================
 -- PRODUCTS 
@@ -257,106 +335,155 @@ p_bar.mat_type = 0
 p_bar.mat_index = -1 
 template_rxn.products:insert('#', p_bar)
 
--- 3. INORGANIC LOOKUP TABLE
-local inorganics = df.global.world.raws.inorganics.all
-local mat_lookup = {}
-for i, mat in ipairs(inorganics) do
-    mat_lookup[mat.id] = i
-end
-
 -- ==========================================
--- 4. BUILD THE DYNAMIC COLOUR REACTIONS
+-- 3. THE FINISHES THE FORT CAN MAKE
 -- ==========================================
+-- Until 2026-10-02 this built a reaction for every finish in the
+-- blueprint, 99,574 with every base metal selected. Now only the pairs of
+-- base metal and dust the fort has had both of are built
+-- (refinish-mint-finish.lua, which also mints them in play). Their ids
+-- come from there, grouped by category and sorted as the full set was,
+-- and each is built there by build_reaction(), so the load and a mint in
+-- play make a finish reaction the same way. The material lookup this
+-- section used to build lives there too (index_of).
+--
+-- Without refinish-mint-finish no finish reaction or forge folder is
+-- built, and the grinders below still are.
+-- ==========================================
+if LC then t_xr = LC.lap('reactions (finishes): categories and templates', t_xr) end
 local count = 0
-
-local pending_rxns = {}
-for rxn_id, data in pairs(_G.refinish_blueprint.reactions) do
-    table.insert(pending_rxns, { id = rxn_id, data = data })
+local ok_mint, mint = pcall(reqscript, 'refinish-mint-finish')
+if not ok_mint then
+    log('ERROR', 'refinish-mint-finish could not be loaded, so no finish reaction'
+        .. ' or forge folder was built: ' .. tostring(mint), 'TEMPLATES')
+    mint = nil
 end
 
--- Sort reactions so they are cleanly clumped by category in memory
-table.sort(pending_rxns, function(a, b)
-    if a.data.category == b.data.category then
-        return a.id < b.id
+-- ---- THE TEMPLATE, READ ONCE ----
+-- What each reaction takes from template_rxn beyond its assign (each
+-- reagent's code, each product's item type) is read here once, not again
+-- for every reaction: the loop used to walk the template's vectors and
+-- read those fields back through DFHack 99,574 times. Each reaction's
+-- own vectors are read once too (refinish-mint-finish.lua,
+-- build_reaction), and the array's length once a reaction.
+local tmpl_reagents, tmpl_products = {}, {}
+-- ---- ONLY WHAT ASSIGN LEFT TO DO ----
+-- assign copies the template's reagents, product and flags, so a write
+-- below of a value the template already holds changes nothing: type0
+-- marks a template reagent or product already on mat_type 0, and
+-- fuel_set the template's own FUEL flag. Read once here, and those
+-- writes are skipped for every reaction. MEASURED 2026-10-01 (the load
+-- clock, region4): this loop cost 984 ms for 99,574 reactions. mat_type
+-- is read under pcall: a reagent or product class without one is left
+-- to the writes, as before.
+local function mat_type_of(x) return x.mat_type end
+for _, orig_rgt in ipairs(template_rxn.reagents) do
+    local ok_t, mt = pcall(mat_type_of, orig_rgt)
+    tmpl_reagents[#tmpl_reagents + 1] = { ref = orig_rgt, code = orig_rgt.code,
+        type0 = ok_t and mt == 0 }
+end
+local ITEM_BAR = df.item_type.BAR
+for _, orig_prod in ipairs(template_rxn.products) do
+    local ok_t, mt = pcall(mat_type_of, orig_prod)
+    tmpl_products[#tmpl_products + 1] = { ref = orig_prod, is_bar = orig_prod.item_type == ITEM_BAR,
+        type0 = ok_t and mt == 0 }
+end
+local fuel_set = template_rxn.flags.FUEL
+
+-- ---- THE ENTITY STAGE'S HANDOVER ----
+-- refinish-index-entity's phase 1 needs every finish reaction's position
+-- by base metal, and the grinders', and found them by reading all
+-- 103,534 reaction codes (MEASURED 2026-10-01, the load clock, region4:
+-- 126 ms). This stage knows each as it builds it, so it writes them down
+-- in array order, with the first and last code of each base metal, and
+-- publishes them with the array's length when the grinders are done.
+-- Phase 1 checks them against the live array before it uses them.
+local handover = { finishes = {}, first_code = {}, last_code = {}, grinders = {} }
+
+-- One reaction written down for the entity stage, in array order, with
+-- its base metal's first and last code.
+local function hand_over(b_id, code, index)
+    local list = handover.finishes[b_id]
+    if not list then
+        list = {}
+        handover.finishes[b_id] = list
+        handover.first_code[b_id] = code
     end
-    return a.data.category < b.data.category
-end)
+    list[#list + 1] = index
+    handover.last_code[b_id] = code
+end
 
-for _, item in ipairs(pending_rxns) do
-    local rxn_id = item.id
-    local data = item.data
-
-    local reagent_idx = mat_lookup[data.reagent_id]
-    local output_idx = mat_lookup[data.output_mat_id]
-    
-    -- NEW BREADCRUMB LOOKUP: Find the correct input bar index
-    local base_idx = mat_lookup[data.base_metal_id]
-
-    if reagent_idx and output_idx and base_idx then
-        local m = df.reaction:new()
-        m:assign(template_rxn)
-
-        m.code = rxn_id
-        m.name = data.name
-        m.category = data.category
-
-        m.reagents:resize(0) 
-        for _, orig_rgt in ipairs(template_rxn.reagents) do
-            local new_rgt = df.reaction_reagent_itemst:new()
-            new_rgt:assign(orig_rgt)
-            
-            if new_rgt.item_type == df.item_type.POWDER_MISC then
-                new_rgt.mat_type = 0
-                new_rgt.mat_index = reagent_idx
-                local dust_string = data.dust_code or "dust"
-                new_rgt.code = dust_string
-                
-            -- Swap the input bar to the user's selected base metal
-            elseif new_rgt.code == "steel_bar" then
-                new_rgt.mat_index = base_idx
-                new_rgt.code = string.lower(data.base_metal_id) .. "_bar"
+-- ==========================================
+-- 4. BUILD THE FINISH REACTIONS
+-- ==========================================
+-- The shell goes over first. A mint in play builds from it too, until
+-- the next data cycle hands over a new one.
+if mint then
+    local bp_reactions = _G.refinish_blueprint.reactions
+    local ok_b, err_b = pcall(function()
+        mint.set_shell({
+            template     = template_rxn,
+            reagents     = tmpl_reagents,
+            products     = tmpl_products,
+            fuel_set     = fuel_set,
+            powder_rxn   = powder_rxn,
+            metal_rgt    = metal_rxn.reagents[metal_rgt_idx],
+            dust_subtype = dust_subtype,
+        })
+        local ids = mint.minted_reactions()
+        if LC then t_xr = LC.lap('reactions (finishes): pairs the fort can make', t_xr) end
+        for _, rxn_id in ipairs(ids) do
+            local idx = mint.build_reaction(rxn_id)
+            if idx then
+                -- Written down for the entity stage (THE ENTITY STAGE'S HANDOVER).
+                hand_over(bp_reactions[rxn_id].base_metal_id, rxn_id, idx)
+                count = count + 1
             end
-            
-            m.reagents:insert('#', new_rgt)
         end
-
-        m.products:resize(0)
-        for _, orig_prod in ipairs(template_rxn.products) do
-            local new_prod = df.reaction_product_itemst:new()
-            new_prod:assign(orig_prod)
-            
-            if new_prod.item_type == df.item_type.BAR then
-                new_prod.mat_type = 0
-                new_prod.mat_index = output_idx
-            end
-            
-            m.products:insert('#', new_prod)
-        end
-
-        reactions_array:insert('#', m)
-        m.index = #reactions_array - 1 
-        reactions_array[#reactions_array - 1].flags.FUEL = true
-        count = count + 1
-    else
-        if _G.refinish_log_event then
-            _G.refinish_log_event("Warning: Could not build reaction " .. rxn_id .. " due to missing mat indexes.")
-        end
+    end)
+    if not ok_b then
+        -- ERROR: the reactions built before the fault stand; the rest of
+        -- the fort's finishes have no reaction this cycle.
+        log('ERROR', 'Finish reactions not built: ' .. tostring(err_b), 'FINISHES')
     end
+end
+
+-- THE LOAD CLOCK: the finish reaction loop, its new and assign apart.
+if LC then
+    LC.add('reactions (finishes): new and assign', mint and mint.assign_ms() or 0, count)
+    t_xr = LC.lap('reactions (finishes): colour reaction loop, all of it', t_xr)
 end
 
 -- ==========================================
 -- 5. LUA-GENERATED GRINDERS
 -- ==========================================
-local function build_grinder(code, name, skill, bld_type, bld_subtypes, item_type, qty, prod_count, is_worthless, requires_fuel)
+-- Four general reactions at the quern and the millstone, each grinding
+-- one kind of feedstock into RM's dust tool in the feedstock's own
+-- material (GET_MATERIAL_SAME off the input). No bag reagent: dust is a
+-- tool now. The per-job clone that pins the material and names it
+-- ("grind cinnabar into dust") is cut from these by the JIT watcher in
+-- refinish_steel.
+--
+-- Still built on the evaluated dust template (powder_rxn), which is
+-- where the reaction shell and the product's shape come from; only the
+-- product's item type and subtype change.
+-- ==========================================
+local function build_grinder(code, name, skill, bld_type, bld_subtypes, item_type, qty, prod_count, is_worthless, requires_fuel, rclass)
     local rxn = df.reaction:new()
-    rxn:assign(powder_rxn) -- The dynamic powder shell
-    
+    rxn:assign(powder_rxn) -- The evaluated shell
+    -- The shell's own descriptions and raw strings stay with it (THE
+    -- TEMPLATE'S IDENTITY, LEFT BEHIND, above).
+    rxn.raw_strings:resize(0)
+    rxn.descriptions:resize(0)
+    rxn.source_hfid = -1
+    rxn.source_enid = -1
+
     rxn.code = code
     rxn.name = name
     rxn.skill = skill
     rxn.category = ""
     pcall(function() rxn.flags.FORTRESS_MODE_ENABLED = true end)
-    
+
     rxn.flags.FUEL = requires_fuel or false
 
     -- Reprogram Building
@@ -381,51 +508,293 @@ local function build_grinder(code, name, skill, bld_type, bld_subtypes, item_typ
     r_in.item_subtype = -1
     r_in.mat_type = 0   -- INORGANIC
     r_in.mat_index = -1 -- ANY
-    
-    -- Safely strip classes just in case
-    r_in.reaction_class = ""
+
+    -- The input's class: none, unless the grinder takes only materials
+    -- that carry one (THE METAL GRINDER'S CLASS, below).
+    r_in.reaction_class = rclass or ""
     rxn.reagents:insert('#', r_in)
 
-    -- Reagent 1: The Bag
-    local r_bag = df.reaction_reagent_itemst:new()
-    r_bag:assign(powder_rxn.reagents[powder_bag_idx])
-    r_bag.code = "bag"
-    rxn.reagents:insert('#', r_bag)
-
-    -- Product 0: The Output Dust
+    -- Product 0: RM's dust tool, in the input's material
     rxn.products:resize(0)
     local p_out = df.reaction_product_itemst:new()
     p_out:assign(powder_rxn.products[powder_prod_idx])
+    p_out.item_type = df.item_type.TOOL
+    p_out.item_subtype = dust_subtype
     p_out.count = prod_count
     p_out.mat_type = -1
     p_out.mat_index = -1
-    
-    -- Exact mapped paths
-    p_out.product_to_container = "bag"
+    p_out.product_to_container = ""
     p_out.flags.GET_MATERIAL_SAME = true
     p_out.get_material.reagent_code = "input"
-    
+
     rxn.products:insert('#', p_out)
 
     -- Insert the complete reaction into the live global array
     rxn.index = #reactions_array
     reactions_array:insert('#', rxn)
+    -- Written down for the entity stage (THE ENTITY STAGE'S HANDOVER).
+    handover.grinders[#handover.grinders + 1] = { code = code, index = rxn.index }
 
     -- Write the static C++ bitfield directly to the live memory pointer
     reactions_array[#reactions_array - 1].reagents[0].flags2.non_economic = is_worthless
 
 end
 
--- Inject all 4 Grinders safely using exact ground-truth paths (Added Fuel Bool at the end)
--- 13/4 = Jeweler, 13/2 = Mason, 13/5 & 13/6 = Forge & Magma Forge
-build_grinder("REFINISH_STEEL_RXN_LUA_GRIND_GEMS", "grind rough gems into dust", df.job_skill.CUTGEM, 13, {4}, df.item_type.ROUGH, 3, 1, false, false)
-build_grinder("REFINISH_STEEL_RXN_LUA_GRIND_COMMON", "grind common stone into dust", df.job_skill.MASONRY, 13, {2}, df.item_type.BOULDER, 1, 4, true, false)
-build_grinder("REFINISH_STEEL_RXN_LUA_GRIND_ANY", "grind any stone into dust", df.job_skill.MASONRY, 13, {2}, df.item_type.BOULDER, 1, 4, false, false)
-build_grinder("REFINISH_STEEL_RXN_LUA_GRIND_METAL", "grind metal bars into dust", df.job_skill.METALCRAFT, 13, {5, 6}, df.item_type.BAR, 150, 1, false, false)
+-- The four grinders, at the quern and the millstone, named by their
+-- enums so no number can drift. The counts are how many stacks: a
+-- boulder's dust comes in four, so four jobs can draw from it at once,
+-- and three rough gems' or a bar's in one. How much is in them is
+-- measured from what was ground, in the dust's own unit: 50 from a
+-- boulder, 3 and three quarters from three rough gems, 3 from a bar
+-- (refinish-reaction-outputs.lua, MEASURED STACKS). The skills stay the material's
+-- own: the gem cutter grinds gems, the mason stone, the metalsmith bars.
+-- For reference, the grinders' old homes by number, as this file wrote
+-- them before the enum names: building type 13 is a workshop; subtype 4
+-- Jeweler, 2 Mason, 5 and 6 Forge and Magma Forge.
+-- ==========================================
+-- THE METAL GRINDER'S CLASS
+-- ==========================================
+-- The metal grinder took a bar of ANY inorganic, so its job details
+-- picker listed every one (62,239 rows with every base metal on) and DF
+-- took 31 s to open it (lag probe, 2026-09-30). With a class on its
+-- input that only grindable metals carry, the same picker opened in
+-- 5.1 s (class probe, same day). The list is still every inorganic, as
+-- DF builds it whatever the class; what went is the rest of the 31 s,
+-- read as DF counting usable bars for every row, now that only bars of
+-- the grindable metals qualify. Finished bars never carry it: they are
+-- ground at grinders of their own, one per base metal (THE FINISHED-METAL
+-- GRINDERS, below), so they stay out of this picker.
+--
+-- WHO CARRIES IT: RM's valid metals, the ones the metals panel lets you
+-- select (refinish-boot's list, _G.refinish_valid_bases at STEP 2.5,
+-- less the entries with no known crafting path, which the panel sorts
+-- with its unavailable metals and will not select), less the active base
+-- metals while base protection is on, the same site data the grind
+-- watcher reads. Changing protection takes a data cycle, which the
+-- config panel prompts for. Anything that is also a stone is left out:
+-- a class makes a material economic, and the non_economic reagents that
+-- care (DF's WORTHLESS_STONE_ONLY) take boulders, never bars, so only a
+-- metal that is also a stone could be moved by it.
+--
+-- THE LIFECYCLE: granted here, at STEP 5, after every material this
+-- cycle makes (modules at STEP 2, finishes at STEP 4), so nothing copies
+-- a metal while it carries the class.
+-- A finish minted after this step, at a load or in play
+-- (refinish-mint-finish.lua), copies its base metal with the class on
+-- it, and erases the entry from its copy (THE GRINDER'S CLASS STAYS ON
+-- THE BASE, there). Taken off every inorganic by
+-- refinish-clear-reaction at shutdown, before the next cycle copies base
+-- metals into finishes. The save hook shuts RM down before every save,
+-- so the class never reaches one.
+-- ==========================================
+-- Words, not a token (2026-10-05): DF prints a reagent's class in the
+-- grinder's hover and objection ("150 unfinished metal bars"), so the
+-- class is the words a player reads. Only RM writes lowercase classes
+-- (raws tokens are uppercase, and the modules' reads words are taken back
+-- before any clear, refinish-material-classes.lua), so the text still
+-- names RM's own strings at shutdown.
+local GRIND_METAL_CLASS = 'unfinished metal'   -- refinish-clear-reaction.lua and refinish-mint-finish.lua match this string
+
+-- reaction_class is a vector of string POINTERS: a new entry is a string
+-- allocated for it, and its text is on .value.
+local function new_string_ptr(s)
+    local p = df.new('string'); p.value = s; return p
+end
+
+-- The protected bases, as the grind watcher reads them (refinish_steel,
+-- PROTECTED BASES): protection is on only when set to YES, and the
+-- protected bases are the selected ones, every base with a refinishing
+-- path when none is saved (refinish-bases.lua, THE DEFAULT SELECTION).
+-- Off by default since 2026-10-03: with every base selected by default,
+-- protection would leave the metal grinder no metal to take. Until then
+-- it was on unless set otherwise, and steel was the default base.
+local function protected_bases()
+    local protect = dfhack.persistent.getSiteData('refinish_config_protect')
+    if protect ~= 'YES' then return {} end
+    local set = {}
+    local raw = dfhack.persistent.getSiteData('refinish_config_bases')
+    if raw and raw ~= '' then
+        pcall(function() set = require('json').decode(raw) end)
+    else
+        set = dfhack.script_environment('refinish-bases').default_bases() or {}
+    end
+    return set
+end
+
+-- Gives the class to every grindable metal. Returns how many carry it,
+-- or nil when the boot scan left no valid metal list, in which case the
+-- grinder keeps its open input rather than taking nothing.
+local function grant_grind_class()
+    local valid = _G.refinish_valid_bases
+    if type(valid) ~= 'table' then return nil end
+    local inorgs = df.global.world.raws.inorganics.all
+    local n_inorg = #inorgs
+    local skip = protected_bases()
+    local granted, unavailable, protected, stones, moved = 0, 0, 0, 0, 0
+    for _, e in ipairs(valid) do
+        -- e.index is the 0 based DF index the boot scan read it at.
+        local r = (type(e.index) == 'number' and e.index >= 0 and e.index < n_inorg)
+            and inorgs[e.index] or nil
+        if not r or tostring(r.id) ~= tostring(e.id) then
+            moved = moved + 1
+        elseif not e.has_reaction then
+            -- No known crafting path: the metals panel will not select it
+            -- as a base and sorts it with its unavailable metals, so it is
+            -- not a valid metal for the grinder either.
+            unavailable = unavailable + 1
+        elseif skip[e.id] then
+            protected = protected + 1
+        elseif r.material.flags.IS_STONE then
+            stones = stones + 1
+        else
+            local has = false
+            for _, rc in ipairs(r.material.reaction_class) do
+                if rc and rc.value == GRIND_METAL_CLASS then has = true; break end
+            end
+            if not has then
+                r.material.reaction_class:insert('#', new_string_ptr(GRIND_METAL_CLASS))
+            end
+            granted = granted + 1
+        end
+    end
+    log('DETAIL', ('metal grinder: %d valid metal(s) carry %s; left out %d with no known'
+        .. ' crafting path, %d protected base(s) and %d that are also stone%s.'):format(granted,
+        GRIND_METAL_CLASS, unavailable, protected, stones,
+        moved > 0 and ('; ' .. moved .. ' not found where the boot scan read them') or ''))
+    return granted
+end
+
+-- 0 granted still means the class: every valid metal is a protected
+-- base, and then nothing may be ground, as the watcher would rule.
+local grind_class = grant_grind_class() and GRIND_METAL_CLASS or ''
+if grind_class == '' then
+    -- WARNING: the grinder works as before, finished bars included.
+    log('WARNING', 'no valid metal list from the boot scan, so the metal grinder takes any'
+        .. ' bar, finished ones included, and its material picker opens slowly.')
+end
+
+local WORKSHOP = df.building_type.Workshop
+local GRIND_AT = { df.workshop_type.Quern, df.workshop_type.Millstone }
+build_grinder("REFINISH_STEEL_RXN_LUA_GRIND_GEMS", "grind rough gems into dust", df.job_skill.CUTGEM, WORKSHOP, GRIND_AT, df.item_type.ROUGH, 3, 1, false, false)
+build_grinder("REFINISH_STEEL_RXN_LUA_GRIND_COMMON", "grind common stone into dust", df.job_skill.MASONRY, WORKSHOP, GRIND_AT, df.item_type.BOULDER, 1, 4, true, false)
+build_grinder("REFINISH_STEEL_RXN_LUA_GRIND_ANY", "grind any stone into dust", df.job_skill.MASONRY, WORKSHOP, GRIND_AT, df.item_type.BOULDER, 1, 4, false, false)
+build_grinder("REFINISH_STEEL_RXN_LUA_GRIND_METAL", "grind metal bars into dust", df.job_skill.METALCRAFT, WORKSHOP, GRIND_AT, df.item_type.BAR, 150, 1, false, false, grind_class)
+
+-- ==========================================
+-- 6. THE FORGE'S FOLDER PLACEHOLDERS
+-- ==========================================
+-- One reaction per kind folder (colour-based, material-based) inside each
+-- base metal folder, so DF opens the folder that refinish-menu-forge.lua
+-- fills with that kind's finishes. Why they exist
+-- and how they are built: refinish-mint-finish.lua, THE FORGE'S FOLDER
+-- PLACEHOLDERS (moved there 2026-10-02 with the builder, which minting
+-- in play uses too). A kind folder gets one only once a finish of that
+-- kind is in the array, since a folder holding nothing would open on an
+-- empty list.
+--
+-- Built last, sorted by base id and kind, so positions repeat every
+-- cycle. Each
+-- joins its base metal's finishes in the handover, last, so the entity
+-- stage grants it wherever it grants them, and the stage's check reads
+-- its code; the stage's walk does the same by the code's prefix
+-- (REFINISH_STEEL_RXN_FORGE_FOLDER_ in its sort).
+-- ==========================================
+local folders_built = 0
+if mint then
+    local forge = _G.refinish_blueprint.forge
+    for _, f in ipairs(mint.folders()) do
+        local ok, idx = pcall(mint.build_placeholder, f.base, f.kind)
+        if ok and idx then
+            hand_over(f.base, forge.bases[f.base].kinds[f.kind].rxn, idx)
+            folders_built = folders_built + 1
+        else
+            -- ERROR: that kind's finishes stay in the forge's category
+            -- lists; refinish-menu-forge files only finishes whose kind
+            -- folder has its placeholder.
+            log('ERROR', ('Forge folder placeholder for %s (%s) not built: %s'):format(
+                tostring(f.base), tostring(f.kind), tostring(idx)), 'FORGE_FOLDERS')
+        end
+    end
+end
+log('DETAIL', folders_built .. ' forge folder placeholder(s) built.', 'FORGE_FOLDERS')
+
+-- ==========================================
+-- 7. THE FINISHED-METAL GRINDERS
+-- ==========================================
+-- One per base metal with a finish in the array, at the quern and the
+-- millstone, filed under Grind finished metals: how and why,
+-- refinish-mint-finish.lua, THE FINISHED-METAL GRINDERS. Copies of the
+-- metal grinder, so built after it. Sorted by base id, so positions
+-- repeat every cycle. Each joins its base metal's finishes in the
+-- handover, last, so the entity stage grants it wherever it grants them;
+-- the stage's walk does the same by the code's prefix
+-- (REFINISH_STEEL_RXN_LUA_GRIND_FIN_ in its sort).
+-- ==========================================
+local fin_grinders_built = 0
+if mint then
+    for _, b in ipairs(mint.fin_grinder_bases()) do
+        local ok, idx, code = pcall(mint.build_fin_grinder, b)
+        if ok and idx then
+            hand_over(b, code, idx)
+            fin_grinders_built = fin_grinders_built + 1
+        else
+            -- ERROR: that base's finished bars cannot be ground this cycle.
+            log('ERROR', ('Finished-metal grinder for %s not built: %s'):format(
+                tostring(b), tostring(idx)), 'FIN_GRINDERS')
+        end
+    end
+end
+log('DETAIL', fin_grinders_built .. ' finished-metal grinder(s) built.', 'FIN_GRINDERS')
+
+-- The handover is complete: the entity stage checks this length against
+-- the array's before it uses the lists.
+handover.len = #reactions_array
+_G.refinish_rxn_handover = handover
 
 _G.refinish_reactions_loaded = true
 
-if _G.refinish_log_event then _G.refinish_log_event("INDEX RXN: Reaction Injection Complete. " .. count .. " variants added.") end
+if LC then t_xr = LC.lap('reactions (finishes): grinders and grind class', t_xr) end
+log('DETAIL', 'Reaction injection complete: ' .. count .. ' refinish'
+    .. ' reactions added, plus the four grinders.')
 
-print(string.format("Reaction Injection Complete: %d new forge recipes added.", count))
-print("==================================================")
+-- ---- THE REACTION INDEX, BROUGHT UP TO DATE ----
+-- RM's reaction index (refinish-resolve.lua, REACTIONS) is usually first
+-- built during the module pipeline, before this file adds its ~100,000
+-- reactions, and it reads new ones on the next lookup that misses. That
+-- lookup came in play, on a workshop sheet. Reading them here puts the
+-- cost in startup. reqscript is fine on this path: it runs once a cycle,
+-- not per poll.
+pcall(function()
+    local sync = _G.refinish_reactions_sync
+    if not sync then
+        reqscript('refinish-resolve')
+        sync = _G.refinish_reactions_sync
+    end
+    if sync then sync() end
+end)
+
+-- ---- STEP 5 DONE: MINTING IN PLAY MAY BUILD FOLDERS ----
+-- From here a finish minted after this step (refinish-mint-finish.lua)
+-- brings its kind folder's placeholder with it, and the roster keeps whatever
+-- this step minted.
+if mint then pcall(mint.finish_load) end
+
+-- ---- SAVED JOBS FOLLOW THEIR REACTIONS ----
+-- A job's filters name its reaction by position (refinish-module-engine,
+-- JOB FILTERS FOLLOW THEIR REACTION). This file builds its reactions in
+-- one order every cycle, but the set can differ from the session that
+-- saved a job: a pair minted in play was appended after the placeholders
+-- and is sorted into place here, and a save from before the finish
+-- roster had every finish reaction. repoint_job_filters runs in the
+-- module pipeline at Step 2, before any of these exist, so it runs again
+-- now that they all do; its lookups use the reaction index brought up to
+-- date just above.
+pcall(function()
+    local rp = _G.refinish_repoint_jobs
+    if not rp then return end
+    local n_jobs, n_filters = rp()
+    if n_jobs and n_jobs > 0 then
+        log('DETAIL', string.format("Re-pointed %d filter(s) on %d saved job(s) to"
+            .. " their reactions' current positions.", n_filters, n_jobs), 'REPOINT')
+    end
+end)

@@ -119,6 +119,52 @@ end
 
 
 -- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the pass a line belongs to. Every
+-- line here is DETAIL: the startup that runs this scan reports the
+-- outcome.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- Console prints only where they answer a typed command. A print only
+-- appears as the direct answer to a command typed into the DFHack
+-- console, and nowhere else. The one place that holds here is the
+-- diagnostic readout at the end of run_unified_scan, which prints
+-- only when this file is run by hand as a command.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'BOOT_SCAN'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
+-- ==========================================
 -- SHARED UTILITY: RM PREFIX CHECK
 -- ==========================================
 -- Faster than string.find(id, "REFINISH_STEEL_") for hot loops.
@@ -170,7 +216,8 @@ function run_unified_scan(allow_divine, allow_mythical)
     -- ==========================================
     local fortress_traits = {}  -- Pre-filtered subset for Source B3 consumers
 
-    if _G.refinish_log_event then _G.refinish_log_event("BOOT: Pass 1; Evaluating reaction traits (" .. #global_rxns .. " reactions, " .. inorg_count .. " inorganics).") end
+    log('DETAIL', 'Evaluating reaction traits (' .. #global_rxns
+        .. ' reactions, ' .. inorg_count .. ' inorganics).', 'PASS_1')
 
     for pid, rxn in ipairs(global_rxns) do
         if not is_rm_asset(rxn.code) then
@@ -255,7 +302,8 @@ function run_unified_scan(allow_divine, allow_mythical)
     -- than the old design which had a full standalone ore fix pass
     -- PLUS a full evaluation pass as completely separate stages.
     -- ==========================================
-    if _G.refinish_log_event then _G.refinish_log_event("BOOT: Pass 2; Evaluating inorganics (" .. inorg_count .. " entries).") end
+    log('DETAIL', 'Evaluating inorganics (' .. inorg_count .. ' entries).',
+        'PASS_2')
 
     -- ore_metals: the set of metal IDs reachable by smelting any ore.
     -- This is "Source A: Universal Physics" - any civ with forge mood
@@ -469,7 +517,9 @@ function run_unified_scan(allow_divine, allow_mythical)
 
     local valid_map_count = 0
     for _ in pairs(valid_metals_map) do valid_map_count = valid_map_count + 1 end
-    if _G.refinish_log_event then _G.refinish_log_event(string.format("BOOT: Pass 1+2 complete; %d reaction traits, %d valid metals, %d in valid_metals_map.", rxn_trait_count, #valid_metals, valid_map_count)) end
+    log('DETAIL', string.format('Passes 1 and 2 complete; %d reaction'
+        .. ' traits, %d valid metals, %d in valid_metals_map.',
+        rxn_trait_count, #valid_metals, valid_map_count), 'PASS_1_2')
 
 
     -- ==========================================
@@ -490,7 +540,8 @@ function run_unified_scan(allow_divine, allow_mythical)
     --      in Pass 1). Source B3 uses fortress_traits (pre-cached in
     --      Pass 1). Zero calls to extract_metal_ids_safely here.
     -- ==========================================
-    if _G.refinish_log_event then _G.refinish_log_event("BOOT: Pass 3; Player civ permissions + civilization tech evaluation.") end
+    log('DETAIL', 'Evaluating player civ permissions and civilization tech.',
+        'PASS_3')
 
     -- -------------------------------------------------------
     -- STEP 3A: PLAYER CIV PERMISSIONS
@@ -788,7 +839,8 @@ function run_unified_scan(allow_divine, allow_mythical)
 
     local civ_count = 0
     for _ in pairs(civ_tech) do civ_count = civ_count + 1 end
-    if _G.refinish_log_event then _G.refinish_log_event(string.format("BOOT: Pass 3 complete; %d unique civilization raws evaluated.", civ_count)) end
+    log('DETAIL', string.format('Pass 3 complete; %d unique civilization'
+        .. ' raws evaluated.', civ_count), 'PASS_3')
 
 
     -- ==========================================
@@ -801,9 +853,14 @@ function run_unified_scan(allow_divine, allow_mythical)
 
     local final_known_count = 0
     for _ in pairs(known_metals_cache) do final_known_count = final_known_count + 1 end
-    if _G.refinish_log_event then _G.refinish_log_event(string.format("BOOT: Unified scan complete; %d valid bases, %d known metals, %d reaction traits, %d civ techs cached to _G.", #valid_metals, final_known_count, rxn_trait_count, civ_count)) end
+    log('DETAIL', string.format('Unified scan complete; %d valid bases, %d'
+        .. ' known metals, %d reaction traits, %d civ techs cached.',
+        #valid_metals, final_known_count, rxn_trait_count, civ_count),
+        'UNIFIED_SCAN')
 
-    -- Diagnostic Readout for Console Verification
+    -- Diagnostic readout for console verification. These prints stay:
+    -- they only run when this file is typed as a command, so they are
+    -- the direct answer to it.
     if dfhack_flags and dfhack_flags.module == false then
         print(string.format("Refinish Boot Diagnostic:"))
         print(string.format(" -> Found %d physically valid metals.", #valid_metals))

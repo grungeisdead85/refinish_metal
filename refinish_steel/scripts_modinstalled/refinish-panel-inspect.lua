@@ -20,6 +20,49 @@ local dialogs = require('gui.dialogs')
 local utils = require('utils')
 
 -- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the view or object type a line is
+-- about. Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'INSPECTOR'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
+-- ==========================================
 -- TEXT WRAPPING
 -- ==========================================
 -- Breaks a long string into lines that fit within max_width
@@ -1004,9 +1047,9 @@ local function build_sheet(obj, obj_type, obj_index)
     if ok and type(result) == "table" then
         return result
     else
-        if _G.refinish_log_event then
-            _G.refinish_log_event("INSPECTOR ERROR: Sheet build failed for " .. tostring(obj_type) .. " -> " .. tostring(result))
-        end
+        -- ERROR: the panel shows READ ERROR, and this says why.
+        log('ERROR', 'Sheet build failed: ' .. tostring(result),
+            tostring(obj_type))
         return {"=== READ ERROR ===", " Failed to build sheet for type: " .. tostring(obj_type), " " .. tostring(result)}
     end
 end
@@ -1062,9 +1105,9 @@ function RefinishPanelInspect:init()
         -- gm-editor: opens the current object in DFHack's gm-editor
         CUSTOM_CTRL_G = function()
             if self.current_gm_path ~= "" then
-                if _G.refinish_log_event then
-                    _G.refinish_log_event("INSPECTOR: Opened gm-editor -> " .. self.current_gm_path)
-                end
+                -- DETAIL: navigation inside a debugging tool.
+                log('DETAIL', 'Opened gm-editor on '
+                    .. tostring(self.current_gm_path) .. '.', 'GM_EDITOR')
                 dfhack.run_command('gui/gm-editor', self.current_gm_path)
             end
         end
@@ -1085,9 +1128,8 @@ function RefinishPanelInspect:init()
         cursor_pen = self.theme.PRI,
         on_submit = function(idx, choice)
             if self.view_state == "RESULTS" and choice.data then
-                if _G.refinish_log_event then
-                    _G.refinish_log_event("INSPECTOR: Selected -> " .. choice.text)
-                end
+                log('DETAIL', 'Selected ' .. tostring(choice.text) .. '.',
+                    'RESULTS')
                 self:open_sheet(choice.data.obj, choice.data.type, choice.data.path, choice.data.idx)
             end
         end
@@ -1144,7 +1186,8 @@ end
 function RefinishPanelInspect:do_search(query)
     -- Empty query = clear and return to idle
     if not query or query == "" then
-        if _G.refinish_log_event then _G.refinish_log_event("INSPECTOR: Search cleared.") end
+        -- DETAIL throughout: search tracking inside a debugging tool.
+        log('DETAIL', 'Search cleared.', 'SEARCH')
         self.view_state = "IDLE"
         self.search_results = {}
         self.current_gm_path = ""
@@ -1152,21 +1195,22 @@ function RefinishPanelInspect:do_search(query)
         return
     end
 
-    if _G.refinish_log_event then _G.refinish_log_event("INSPECTOR: Searching for '" .. query .. "'") end
+    log('DETAIL', "Searching for '" .. tostring(query) .. "'.", 'SEARCH')
 
     self.search_results = execute_search(query)
     local results = self.search_results
 
     if #results == 0 then
-        if _G.refinish_log_event then _G.refinish_log_event("INSPECTOR: No results for '" .. query .. "'") end
+        log('DETAIL', "No results for '" .. tostring(query) .. "'.", 'SEARCH')
         self.view_state = "IDLE"
         self.list_widget:setChoices({"  No objects found matching '" .. query .. "'."})
     elseif #results == 1 then
         -- Single match: auto-open the detail sheet
-        if _G.refinish_log_event then _G.refinish_log_event("INSPECTOR: Single match -> " .. results[1].text) end
+        log('DETAIL', 'Single match: ' .. tostring(results[1].text) .. '.',
+            'SEARCH')
         self:open_sheet(results[1].data.obj, results[1].data.type, results[1].data.path, results[1].data.idx)
     else
-        if _G.refinish_log_event then _G.refinish_log_event("INSPECTOR: " .. #results .. " results found.") end
+        log('DETAIL', #results .. ' results found.', 'SEARCH')
         self:show_results()
     end
 end

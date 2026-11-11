@@ -22,6 +22,65 @@
 --   refinish-module-engine.lua (pipeline step)
 -- ==========================================
 
+-- ==========================================
+-- LOG FUNNELS
+-- ==========================================
+-- RM's own, and peripheral rather than pipeline. Every line this file
+-- writes goes through one of the two funnels below, in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body.
+--
+-- The panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- Two subsystems, as this file always had: MODULE_INJECT for the
+-- materials and GRAPHICS for their sprites. One funnel per subsystem,
+-- from the same factory refinish_steel uses, so the call sites no
+-- longer pass it. SUBJECT is the correlation slot: the part of the job
+-- a line is about, or the module it concerns.
+--
+-- A material this file could not build, or built broken, is an ERROR:
+-- the player meets it in play. A declaration ignored in favour of a
+-- sane default is a WARNING.
+--
+-- This replaces a log() that let refinish-log guess TYPE from the
+-- words (read_type) unless a call site said otherwise.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else.
+-- ==========================================
+local LOG_SYS = 'REFINISH_METAL'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function make_log(sub)
+    return function(typ, msg, subject)
+        if not _G.refinish_log_event then return end
+        local line
+        if rlog then
+            line = rlog.compose(LOG_SYS, sub, subject, typ, msg)
+        else
+            -- The composer failed to load. Same grammar, unsanitised.
+            line = string.format('%s %s %s %s | %s', LOG_SYS, sub,
+                tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+                tostring(msg))
+        end
+        _G.refinish_log_event(line)
+    end
+end
+
+local log_inject   = make_log('MODULE_INJECT')
+local log_graphics = make_log('GRAPHICS')
+
 local types = reqscript('refinish-module-types')
 local clone_eval = reqscript('refinish-evaluate-clone-source')
 
@@ -207,8 +266,15 @@ local function reset_to_neutral(m)
     mat.strength.absorption = 0
 
     -- Stone name. Empty string on all 16 references and builtin.
-    -- Reset for safety in case an exotic donor has one.
+    -- Reset for safety in case an exotic donor has one, then
+    -- rewritten from def.stone_name at STEP 3b if the schema asks.
     mat.stone_name = ""
+
+    -- Dye colour. -1 on the builtin and on every dumped inorganic, so
+    -- a stone donor already brings -1; reset anyway so an exotic donor
+    -- cannot hand a non-dye a dye colour. apply_dye_color writes the
+    -- real value once the flags are final (STEP 13b).
+    mat.powder_dye = -1
 
     -- Block name, same reasoning. A ceramic donor would otherwise
     -- leak its "bricks" naming onto anything cloned from it.
@@ -278,28 +344,81 @@ end
 -- ==========================================
 -- COLOR RESOLVER
 -- ==========================================
--- Looks up a descriptor color name in the world's color table.
--- Falls through fallback names, then to ANSI index 7 (light gray).
--- Same pattern as making_metal.lua's resolve_color, now shared.
+-- A descriptor colour name in; out, the index of that colour's own
+-- PATTERN, because that is what a material's state_color holds (DF's
+-- color_pattern, see APPLY COLOR). Falls through fallback names, then
+-- to colour 7.
 -- ==========================================
-local function resolve_color(primary, fallbacks)
+-- Global for the same reason as the appliers below: the plant
+-- injector resolves colour through this before calling apply_color,
+-- which takes a RESOLVED spec (solid, display, build) rather than
+-- the raw JSON keys (color, fallback_colors).
+
+-- ---- A COLOUR'S OWN PATTERN ----
+-- DF gives every colour a single colour pattern named after it
+-- (COBALTITE's pattern is COBALTITE). Vanilla's 136 come first, in
+-- colour order, so a colour index written straight into state_color
+-- used to land on the right pattern. A colour loaded later has its
+-- pattern appended after every pattern file: with Argmod's 29 colours
+-- (2026-09-30) they sit at 421 to 449 of 450, and COBALTITE's colour
+-- index, 150, wore vanilla's pattern 150 instead (cobalt clay's binder
+-- came out golden). Built once per pattern list, keyed by its length:
+-- the pattern named after the colour first, else any single colour
+-- pattern of it.
+local pattern_by_name, pattern_by_any, pattern_list_n = {}, {}, -1
+local pattern_missing_logged = {}
+
+local function pattern_of_color(ci)
+    local d = df.global.world.raws.descriptors
+    if pattern_list_n ~= #d.patterns then
+        pattern_by_name, pattern_by_any = {}, {}
+        for i, p in ipairs(d.patterns) do
+            if #p.colors == 1 then
+                local c = p.colors[0]
+                if pattern_by_any[c] == nil then pattern_by_any[c] = i end
+                if pattern_by_name[c] == nil and c >= 0 and c < #d.colors
+                        and d.colors[c].id == p.id then
+                    pattern_by_name[c] = i
+                end
+            end
+        end
+        pattern_list_n = #d.patterns
+    end
+    return pattern_by_name[ci] or pattern_by_any[ci]
+end
+
+function resolve_color(primary, fallbacks)
     local colors = df.global.world.raws.descriptors.colors
+    local ci = nil
     if primary then
         local upper_primary = string.upper(primary)
         for i, c in ipairs(colors) do
-            if c.id == upper_primary then return i end
+            if c.id == upper_primary then ci = i; break end
         end
     end
-    if fallbacks then
+    if ci == nil and fallbacks then
         for _, fb_name in ipairs(fallbacks) do
             local upper_fb = string.upper(fb_name)
             for i, c in ipairs(colors) do
-                if c.id == upper_fb then return i end
+                if c.id == upper_fb then ci = i; break end
             end
+            if ci ~= nil then break end
         end
     end
-    -- Final fallback: ANSI color 7 (white/light gray)
-    return 7
+    -- Final fallback: colour 7.
+    if ci == nil then ci = 7 end
+
+    local pi = pattern_of_color(ci)
+    if pi then return pi end
+    -- WARNING, once a colour: no single colour pattern for it. The colour
+    -- index is the old behaviour, and right only for vanilla's colours.
+    if not pattern_missing_logged[ci] then
+        pattern_missing_logged[ci] = true
+        log_inject('WARNING', string.format('colour %d (%s) has no single colour'
+            .. ' pattern; its index is used as the pattern.', ci,
+            tostring(colors[ci] and colors[ci].id)), 'COLOR')
+    end
+    return ci
 end
 
 
@@ -330,7 +449,19 @@ end
 -- handles powder display names ("[name] dust") separately in its own
 -- pipeline for materials it processes.
 -- ==========================================
-local function apply_display_name(material, name, names)
+-- ==========================================
+-- SHARED MATERIAL APPLIERS: GLOBAL ON PURPOSE
+-- ==========================================
+-- The functions below are declared without `local` so that
+-- refinish-module-inject-plant.lua can call them. reqscript returns
+-- a script's GLOBAL environment and cannot see file locals, so as
+-- locals they were invisible to the plant path, which would then
+-- need its own copy of all eight.
+--
+-- Re-localising any of them compiles cleanly and silently breaks
+-- plant material naming, colour, sprites and reaction classes.
+-- ==========================================
+function apply_display_name(material, name, names)
     names = names or {}
 
     -- Generate the default for each state, then let an explicit
@@ -363,10 +494,13 @@ end
 -- DF stores material colour in TWO UNRELATED number spaces. Mixing
 -- them is the bug this function exists to prevent.
 --
---   state_color[]  -- Index into world.raws.descriptors.colors.
---                     Drives the colour WORD ("silver-colored bar").
---                     Range is however many descriptors are loaded,
---                     typically in the hundreds.
+--   state_color[]  -- Index into world.raws.descriptors.PATTERNS
+--                     (DF's color_pattern, df-structures), not into
+--                     the colour list: resolve_color hands over the
+--                     colour's own single colour pattern. Drives the
+--                     colour WORD ("silver-colored bar") and the art.
+--                     For vanilla's first 136 colours the pattern and
+--                     colour indices match; for a mod's they do not.
 --
 --   tile_color[]   -- ANSI triple {foreground, background, brightness}.
 --   build_color[]     Drives the actual on-screen colour. Range 0-7.
@@ -377,7 +511,9 @@ end
 -- and its loaded material reads:
 --   tile_color={0,7,1}  build_color={0,7,1}  state_color.Solid=49
 -- Confirming the DISPLAY/BUILD tokens pass straight through as ANSI
--- while STATE_COLOR resolves to a descriptor index.
+-- while STATE_COLOR resolves to an index. 49 is GRAY's colour AND
+-- GRAY's pattern, which is why this read as a colour index: they part
+-- for colours loaded after vanilla's (2026-09-30, Argmod).
 --
 -- spec fields:
 --   solid   -- descriptor index (required)
@@ -393,7 +529,7 @@ end
 -- ==========================================
 local DEFAULT_ANSI = { 7, 0, 0 }
 
-local function apply_color(material, spec)
+function apply_color(material, spec)
     local solid  = spec.solid
     local liquid = spec.liquid or solid
     local gas    = spec.gas    or solid
@@ -425,6 +561,60 @@ end
 
 
 -- ==========================================
+-- APPLY GRAPHICS (material-side sprite slots)
+-- ==========================================
+-- Canonical version, replacing all prior variants wholesale.
+-- Immediate application (the load-order race theory was disproven:
+-- coal read warm, 42294, during the failing runs). The one real
+-- bug was donor grammar: matinfo.find speaks raws tokens and knows
+-- no builtins, so BUILTIN:<NAME> is resolved by this engine
+-- directly against mat_table.builtin.
+--
+-- Schema, on a material definition:
+--   "graphics": {
+--     "bar":     "BUILTIN:COAL",
+--     "boulder": { "donor": "INORGANIC:MAGNETITE" },
+--     "wood":    { "donor": "PLANT:OAK:WOOD", "offset": 1 },
+--     "texflag": "BUILTIN:COAL"
+--   }
+-- Slots: bar, boulder, wood, rough, cheese, texflag. Paired slots
+-- copy both donor fields. offset shifts by whole cells; the atlas
+-- row stride measured on ITEM_CONSTRUCTION is 4.
+--
+-- texpos is read LIVE from the donor at inject time, never stored,
+-- so values stay correct across asset changes between sessions.
+-- Delegation: the material handler moved into the universal sprite
+-- engine so materials and tools share one resolver and one source
+-- grammar. Behaviour is identical; only the address changed.
+local sprite_engine = nil
+local function get_sprite_engine()
+    if sprite_engine == nil then
+        local ok, eng = pcall(reqscript, 'refinish-sprite-engine')
+        sprite_engine = ok and eng or false
+    end
+    return sprite_engine or nil
+end
+
+-- token is the material's own: INORGANIC:<id> from step 8 below, or
+-- PLANT_MAT:<plant>:<material> from refinish-module-inject-plant.lua,
+-- which calls this for plant host materials such as Making Fuel's coal
+-- host coals. The sprite engine keeps every TINT: slot by it to repaint
+-- them live, and cannot find it for itself here: a new material is not
+-- in its list until after its graphics are applied.
+function apply_graphics(material, spec, mat_key, token)
+    if spec == nil then return end
+    local eng = get_sprite_engine()
+    if eng then
+        eng.apply_to_material(material, spec, mat_key, token)
+    else
+        -- WARNING: the material draws without its sprite.
+        log_graphics('WARNING', 'sprite engine missing,'
+            .. ' nothing applied for ' .. tostring(mat_key), 'ENGINE')
+    end
+end
+
+
+-- ==========================================
 -- APPLY MATERIAL CLASS PRESET
 -- ==========================================
 -- Reads the clear/set lists from the types dictionary and
@@ -433,7 +623,7 @@ end
 --   1. Clear: force-set listed flags to false
 --   2. Set:   force-set listed flags to true
 -- ==========================================
-local function apply_class_preset(material, class_name)
+function apply_class_preset(material, class_name)
     local preset = types.MATERIAL_CLASS_PRESETS[class_name]
     if not preset then return end
 
@@ -450,11 +640,88 @@ end
 
 
 -- ==========================================
+-- APPLY DYE COLOUR
+-- ==========================================
+-- powder_dye is the colour a dye DYES with, a descriptor index, and it
+-- is a separate field from the colour the material LOOKS like. Every
+-- vanilla dye sets it with [POWDER_DYE:<colour>]; IS_DYE never appears
+-- in vanilla without it. Vanilla keeps the two apart on purpose:
+-- redroot dye looks BROWN and dyes RED.
+--
+-- MEASURED (making-fuel-dye-probe, 2026-09-23):
+--   * DF's dye system is keyed on this field. Every dye job slot names
+--     a colour (job_item.dye_color), and a dye answers through
+--     isDyeColor(), which reads its material's powder_dye: a dye item
+--     made while the field was -1 reported BLACK as soon as the field
+--     was written. The Make dye menu swatch is the product's
+--     powder_dye as well.
+--   * A dye left at -1 is still IS_DYE, so a plain Dye cloth job takes
+--     it, completes, and dyes nothing.
+--
+-- RULE. A material that is IS_DYE gets a dye colour. The module's
+-- dye_color wins when it names a loaded colour. Otherwise the default
+-- is the colour the material already wears: the first colour of its
+-- state_color.Powder pattern, which apply_color writes. powder_dye is
+-- a COLOUR index (df-structures), state_color a PATTERN index. A dye_color naming no loaded colour is reported
+-- and the default used; a dye with no colour at all is reported and
+-- left at -1. A material that is not IS_DYE is given -1.
+--
+-- Called once the flags are final, since IS_DYE can come from the
+-- class preset or from a material_flags override. label names the
+-- material in the log.
+-- ==========================================
+function apply_dye_color(material, def, label)
+    if not material.flags.IS_DYE then
+        material.powder_dye = -1
+        return
+    end
+
+    -- The override, by exact token. resolve_color is not used here
+    -- because its last resort is a fixed index, which would hand a
+    -- misspelt dye_color a real but wrong colour with no report.
+    local idx = nil
+    if def and def.dye_color then
+        local want = string.upper(tostring(def.dye_color))
+        for i, c in ipairs(df.global.world.raws.descriptors.colors) do
+            if c.id == want then idx = i; break end
+        end
+        if not idx then
+            log_inject('WARNING', string.format(
+                "[%s] dye_color '%s' is not a loaded colour; the material's own colour is used.",
+                tostring(label), tostring(def.dye_color)), 'DYE')
+        end
+    end
+
+    -- The derived default.
+    if not idx then
+        local own = material.state_color.Powder
+        if own and own >= 0 then
+            pcall(function()
+                local p = df.global.world.raws.descriptors.patterns[own]
+                if p and #p.colors > 0 then idx = p.colors[0] end
+            end)
+        end
+    end
+
+    if not idx then
+        -- ERROR: plain Dye jobs take it and dye nothing, which the player
+        -- will notice.
+        log_inject('ERROR', "[" .. tostring(label) .. "] is a dye with no colour"
+            .. " to dye with. DF will take it for plain dye jobs and dye"
+            .. " nothing.", 'DYE')
+        material.powder_dye = -1
+        return
+    end
+    material.powder_dye = idx
+end
+
+
+-- ==========================================
 -- APPLY HEAT OVERRIDES
 -- ==========================================
 -- Each sub-field is independent. nil = keep clone's value.
 -- ==========================================
-local function apply_heat(material, heat)
+function apply_heat(material, heat)
     if not heat then return end
     if heat.spec_heat       then material.heat.spec_heat       = heat.spec_heat end
     if heat.melting_point    then material.heat.melting_point    = heat.melting_point end
@@ -472,7 +739,7 @@ end
 -- Three sub-groups (yield, fracture, strain_at_yield) plus max_edge.
 -- Each field within each group is independent. nil = keep clone.
 -- ==========================================
-local function apply_strength(material, strength)
+function apply_strength(material, strength)
     if not strength then return end
 
     local stress_types = { "IMPACT", "COMPRESSIVE", "TENSILE", "TORSION", "SHEAR", "BENDING" }
@@ -524,7 +791,7 @@ end
 -- pointer via df.new('string'), sets its value, and returns it
 -- ready for vector:insert().
 -- ==========================================
-local function new_string_ptr(str)
+function new_string_ptr(str)
     local s = df.new('string')
     s.value = str
     return s
@@ -538,7 +805,7 @@ end
 -- definition's reaction_classes array. Clears existing entries
 -- first (from the clone) to avoid inheriting unwanted classes.
 -- ==========================================
-local function apply_reaction_classes(material, reaction_classes)
+function apply_reaction_classes(material, reaction_classes)
     -- nil = field omitted from schema, preserve clone's classes.
     -- Empty array = modder explicitly wants no reaction classes,
     -- clear the clone's inherited classes.
@@ -594,10 +861,23 @@ local function apply_reaction_products(material, reaction_products, mat_lookup, 
     rp.item_subtype:resize(0)
     rp.material.mat_type:resize(0)
     rp.material.mat_index:resize(0)
+    -- str is a fixed array of FIVE string vectors, str[0] to str[4],
+    -- the token parts of the MATERIAL_REACTION_PRODUCT tag. The raws
+    -- parser fills all five for every entry, so their lengths must
+    -- track id. Layout verified against the live object map, not
+    -- assumed. Guarded: a mismatch logs instead of aborting boot.
+    for k = 0, 4 do
+        local ok, err = pcall(function() rp.str[k]:resize(0) end)
+        if not ok then
+            log_inject('WARNING', 'reaction_product str['
+                .. k .. '] clear failed: ' .. tostring(err), 'RXN_PRODUCT')
+        end
+    end
 
     -- Insert new ones (if any - empty array just clears).
     -- rp.id is a vector<string*> requiring pointer allocation;
-    -- the numeric vectors accept raw values directly.
+    -- the numeric vectors accept raw values directly. str mirrors
+    -- the parser: TYPE token, INDEX token, three trailing slots empty.
     for _, entry in ipairs(reaction_products) do
         local target_idx = mat_lookup[entry.mat_id]
         if target_idx then
@@ -606,18 +886,27 @@ local function apply_reaction_products(material, reaction_products, mat_lookup, 
             rp.item_subtype:insert('#', -1)
             rp.material.mat_type:insert('#', 0)  -- INORGANIC
             rp.material.mat_index:insert('#', target_idx)
+            local tokens = { 'INORGANIC',
+                df.global.world.raws.inorganics.all[target_idx].id, '', '', '' }
+            for k = 0, 4 do
+                local ok, err = pcall(function()
+                    rp.str[k]:insert('#', new_string_ptr(tokens[k + 1]))
+                end)
+                if not ok then
+                    log_inject('WARNING', 'reaction_product str['
+                        .. k .. '] write failed for ' .. entry.id .. ': ' .. tostring(err), 'RXN_PRODUCT')
+                end
+            end
         elseif warn then
             -- Target material not found on the FINAL pass, so every
             -- module has already injected. This is a real dangling
             -- reference: a typo, or a module that failed to load.
-            print(string.format("Refinish Metal: reaction_product '%s' references unknown material '%s'. Skipping.",
-                entry.id, entry.mat_id))
-            if _G.refinish_log_event then
-                _G.refinish_log_event(string.format(
-                    "MODULE INJECT WARNING: reaction_product '%s' -> '%s' not found.",
-                    entry.id, entry.mat_id
-                ))
-            end
+            -- ERROR: anything that asks this material for the product
+            -- gets nothing.
+            log_inject('ERROR', string.format(
+                "reaction_product '%s' -> '%s' not found. Skipping.",
+                tostring(entry.id), tostring(entry.mat_id)
+            ), 'RXN_PRODUCT')
         end
     end
 end
@@ -679,14 +968,12 @@ function inject(materials, prefix, mod_name)
         -- ---- STEP 1: GET CLONE DONOR ----
         local donor = clone_eval.get_donor(def.material_class)
         if not donor then
-            print(string.format("Refinish Metal: Module [%s]: no clone donor for class [%s], skipping material [%s].",
-                mod_name, def.material_class, full_id))
-            if _G.refinish_log_event then
-                _G.refinish_log_event(string.format(
-                    "MODULE INJECT: No donor for class [%s], skipped [%s].",
-                    def.material_class, full_id
-                ))
-            end
+            -- ERROR: the material is missing from the game. The clone
+            -- evaluator has already warned that the class has no donor.
+            log_inject('ERROR', string.format(
+                "No donor for class [%s], skipped [%s].",
+                tostring(def.material_class), full_id
+            ), tostring(mod_name))
             goto continue
         end
 
@@ -706,13 +993,35 @@ function inject(materials, prefix, mod_name)
         m.material.id = full_id
         apply_display_name(m.material, def.name, def.names)
 
-        -- ---- STEP 3b: BLOCK NAME ----
-        -- What blocks made of this material are called, as a
-        -- {singular, plural} pair. Ceramics use "brick"/"bricks"
-        -- rather than the default block naming.
+        -- ---- STEP 3b: ITEM TYPE NAME OVERRIDES ----
+        -- DF lets a material rename the items made from it, but only
+        -- for two item types, and each has its own field.
+        --
+        --   block_name   BLOCKS   {singular, plural}
+        --                The material name prefixes it, so fire clay
+        --                with {"brick","bricks"} reads "fire clay
+        --                bricks", not "bricks".
+        --
+        --   stone_name   BOULDER  one string, already plural
+        --                Replaces the name outright rather than
+        --                suffixing it. Native gold uses "gold
+        --                nuggets".
+        --
+        -- THERE IS NO EQUIVALENT FOR BARS. A bar always reads
+        -- "<material> bars" unless the inorganic carries the WAFERS
+        -- flag, which makes it "<material> wafers". Those are the
+        -- only two words DF offers, so a bar cannot be freely named.
+        --
+        -- Both fields are blanked in the neutral reset above, so an
+        -- omitted schema key means DF's default naming rather than a
+        -- leak from whatever donor was cloned.
         if def.block_name then
             m.material.block_name[0] = def.block_name[1]
             m.material.block_name[1] = def.block_name[2]
+        end
+
+        if def.stone_name then
+            m.material.stone_name = def.stone_name
         end
 
         -- ---- STEP 4: MATERIAL CLASS PRESET ----
@@ -762,6 +1071,7 @@ function inject(materials, prefix, mod_name)
 
         -- ---- STEP 8: HEAT ----
         apply_heat(m.material, def.heat)
+        apply_graphics(m.material, def.graphics, def.key, 'INORGANIC:' .. full_id)
 
         -- ---- STEP 9: STRENGTH ----
         apply_strength(m.material, def.strength)
@@ -809,6 +1119,21 @@ function inject(materials, prefix, mod_name)
             end
         end
 
+        -- Soap is a flag plus a level. The SOAP flag (set through
+        -- material_flags above) says the material cleans; soap_level
+        -- says how well, and vanilla soap is 2 (SOAP_TEMPLATE:
+        -- [SOAP][SOAP_LEVEL:2]). Hospitals read the level. Written
+        -- only when the definition names it, so every existing
+        -- material is untouched.
+        if def.soap_level then
+            m.material.soap_level = def.soap_level
+        end
+
+        -- ---- STEP 13b: DYE COLOUR ----
+        -- After every flag is final: IS_DYE can come from the class
+        -- preset or from a material_flags override above.
+        apply_dye_color(m.material, def, full_id)
+
         -- ---- STEP 14: INJECT ----
         raws:insert(#raws, m)
 
@@ -835,10 +1160,18 @@ function inject(materials, prefix, mod_name)
         apply_reaction_products(entry.material, entry.def.reaction_products, mat_lookup, false)
     end
 
-    if _G.refinish_log_event then
-        _G.refinish_log_event(string.format(
-            "MODULE INJECT: [%s] injected %d materials.", mod_name, count
-        ))
+    log_inject('DETAIL', string.format(
+        "[%s] injected %d materials.", mod_name, count
+    ), tostring(mod_name))
+
+    -- ---- MATERIAL CACHE HANDSHAKE ----
+    -- Every injection appends to inorganics.all, so any token to
+    -- index answer cached before this call may now name a different
+    -- material. Same contract the tool injector already has with the
+    -- itemdef cache. The global is the handshake so nothing here has
+    -- to know whether refinish-resolve is loaded.
+    if count > 0 then
+        _G.refinish_material_cache_dirty = true
     end
 
     return count

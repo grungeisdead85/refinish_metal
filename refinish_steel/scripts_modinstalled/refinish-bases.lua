@@ -34,4 +34,30 @@ function get_valid_bases(allow_divine, allow_mythical, force_recalc)
     return _G.refinish_valid_bases
 end
 
+-- ==========================================
+-- THE DEFAULT SELECTION
+-- ==========================================
+-- What counts as selected when a fort has never saved a base metal
+-- selection (refinish_config_bases): every valid metal with a refinishing
+-- path (has_reaction), the ones the metals panel lets a player switch on.
+-- Every base is on by default since 2026-10-03: a finish is minted only
+-- once the fort has had its base metal's bars and its dust
+-- (refinish-mint-finish.lua), so a base the fort never uses adds nothing
+-- to its menus. Until then the default was steel alone. A saved
+-- selection always stands, an empty one included.
+--
+-- valid: the valid metal list to choose from (get_valid_bases), the
+-- cached one when nil. Returns id -> true, or nil while there is no list,
+-- so a caller can ask again rather than keep an empty default.
+-- ==========================================
+function default_bases(valid)
+    valid = valid or _G.refinish_valid_bases
+    if type(valid) ~= 'table' then return nil end
+    local set = {}
+    for _, b in ipairs(valid) do
+        if b.has_reaction then set[b.id] = true end
+    end
+    return set
+end
+
 return _ENV

@@ -2,6 +2,53 @@
 -- ==========================================
 -- SCRIPT LOGIC: GLOBAL ENTITY UNLOCKER
 -- ==========================================
+-- Grants every capable civilization permission for core RM's
+-- reactions. Every log line is DETAIL: the startup that calls this
+-- reports the outcome. The per-civ trace stays behind VERBOSE_DEBUG,
+-- in its own file.
+
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the step or thing a line is
+-- about. Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'INDEX_ENTITY'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
 
 local VERBOSE_DEBUG = false
 local debug_file = nil
@@ -17,10 +64,7 @@ if VERBOSE_DEBUG then
     dprint("==================================================")
 end
 
-print("==================================================")
-print("REFINISH STEEL: INITIATING GLOBAL UI UNLOCK")
-print("==================================================")
-if _G.refinish_log_event then _G.refinish_log_event("INDEX ENTITY: Global UI unlock sequence initiated.") end
+log('DETAIL', 'Civ reaction permission unlock initiated.')
 
 -- STATE MANAGER: Deep RAM Verification (Using player civ as a proxy check)
 if _G.refinish_entity_loaded == nil or _G.refinish_entity_loaded == false then
@@ -41,38 +85,133 @@ if _G.refinish_entity_loaded == nil or _G.refinish_entity_loaded == false then
 end
 
 if _G.refinish_entity_loaded then
-    print("Refinish Metal: UI already unlocked. Skipping.")
     dprint("ABORTED: _G.refinish_entity_loaded is already true. UI previously unlocked.")
-    if _G.refinish_log_event then _G.refinish_log_event("INDEX ENTITY: UI already unlocked. Skipping.") end
+    log('DETAIL', 'Civ permissions already unlocked. Skipping.')
     if debug_file then debug_file:close(); debug_file = nil end
     return
 end
 
 -- 1. Categorize our payload
+-- THE LOAD CLOCK (refinish-startup.lua): nil outside a pipeline run.
+local LC = _G.refinish_load_clock
+local t_en = LC and LC.now()
 local reactions = df.global.world.raws.reactions.reactions
-local rxn_idx_to_code = {}
 local rs_payloads = { FINISHES = {}, STONE_GRIND = {}, GEM_GRIND = {}, METAL_GRIND = {} }
 local blueprint_rxns = _G.refinish_blueprint and _G.refinish_blueprint.reactions or {}
 
-dprint("\n--- PHASE 1: CATEGORIZING PAYLOADS ---")
-for _, rxn in ipairs(reactions) do
-    rxn_idx_to_code[rxn.index] = rxn.code
-    if string.find(rxn.code, "REFINISH_STEEL_RXN_LUA_GRIND_COMMON") or string.find(rxn.code, "REFINISH_STEEL_RXN_LUA_GRIND_ANY") then
-        table.insert(rs_payloads.STONE_GRIND, rxn.index)
-    elseif string.find(rxn.code, "REFINISH_STEEL_RXN_LUA_GRIND_GEMS") then
-        table.insert(rs_payloads.GEM_GRIND, rxn.index)
-    elseif string.find(rxn.code, "REFINISH_STEEL_RXN_LUA_GRIND_METAL") then
-        table.insert(rs_payloads.METAL_GRIND, rxn.index)
-    elseif string.find(rxn.code, "REFINISH_STEEL_RXN_") then
-        local bp_data = blueprint_rxns[rxn.code]
-        if bp_data and bp_data.base_metal_id then
-            local b_id = bp_data.base_metal_id
-            if not rs_payloads.FINISHES[b_id] then rs_payloads.FINISHES[b_id] = {} end
-            table.insert(rs_payloads.FINISHES[b_id], rxn.index)
+-- Each forge folder placeholder's code -> its base metal id, read off the
+-- blueprint (refinish-scan.lua, THE FORGE'S FOLDERS). A placeholder
+-- belongs to a kind folder inside its base's, and its code carries the
+-- kind before the base id, so the base is looked up, never cut out of
+-- the code.
+local folder_base = {}
+do
+    local forge = _G.refinish_blueprint and _G.refinish_blueprint.forge
+    if forge and forge.bases then
+        for b_id, f in pairs(forge.bases) do
+            for _, k in pairs(f.kinds or {}) do folder_base[k.rxn] = b_id end
         end
     end
 end
 
+dprint("\n--- PHASE 1: CATEGORIZING PAYLOADS ---")
+-- ---- EACH REACTION READ ONCE ----
+-- MEASURED 2026-10-01, the load clock, region4: this loop cost 289 ms
+-- over 103,534 reactions. A finish read rxn.code seven times and
+-- rxn.index twice, every read a crossing into DFHack (each code read
+-- makes a new string), and was matched against five patterns. All five hold
+-- REFINISH_STEEL_RXN_ (string.find was unanchored), so a code without it
+-- takes no branch and is passed after one plain find. The rest are read
+-- once each and tested with plain finds, which match exactly what the
+-- patterns did: none holds a magic character. The index -> code table
+-- this loop also built was read by nothing, and is gone.
+local find = string.find
+
+-- One RM reaction sorted by the walk's own rules: a grinder by its kind,
+-- else a finish by its base metal.
+local function sort_into(code, index)
+    if find(code, "REFINISH_STEEL_RXN_LUA_GRIND_COMMON", 1, true)
+       or find(code, "REFINISH_STEEL_RXN_LUA_GRIND_ANY", 1, true) then
+        table.insert(rs_payloads.STONE_GRIND, index)
+    elseif find(code, "REFINISH_STEEL_RXN_LUA_GRIND_GEMS", 1, true) then
+        table.insert(rs_payloads.GEM_GRIND, index)
+    elseif find(code, "REFINISH_STEEL_RXN_LUA_GRIND_METAL", 1, true) then
+        table.insert(rs_payloads.METAL_GRIND, index)
+    elseif find(code, "REFINISH_STEEL_RXN_LUA_GRIND_FIN_", 1, true) then
+        -- A finished-metal grinder (refinish-mint-finish.lua, THE
+        -- FINISHED-METAL GRINDERS) goes with its base metal's finishes,
+        -- as the handover puts it; its base is the rest of its code.
+        local b_id = code:sub(#"REFINISH_STEEL_RXN_LUA_GRIND_FIN_" + 1)
+        if b_id ~= "" then
+            if not rs_payloads.FINISHES[b_id] then rs_payloads.FINISHES[b_id] = {} end
+            table.insert(rs_payloads.FINISHES[b_id], index)
+        end
+    elseif find(code, "REFINISH_STEEL_RXN_FORGE_FOLDER_", 1, true) then
+        -- A forge folder's placeholder (refinish-index-reaction.lua, THE
+        -- FORGE'S FOLDER PLACEHOLDERS) goes with its base metal's finishes,
+        -- as the handover puts it; its base comes from folder_base, above.
+        local b_id = folder_base[code]
+        if b_id then
+            if not rs_payloads.FINISHES[b_id] then rs_payloads.FINISHES[b_id] = {} end
+            table.insert(rs_payloads.FINISHES[b_id], index)
+        end
+    else
+        local bp_data = blueprint_rxns[code]
+        if bp_data and bp_data.base_metal_id then
+            local b_id = bp_data.base_metal_id
+            if not rs_payloads.FINISHES[b_id] then rs_payloads.FINISHES[b_id] = {} end
+            table.insert(rs_payloads.FINISHES[b_id], index)
+        end
+    end
+end
+
+-- ---- THE REACTION STAGE'S HANDOVER ----
+-- refinish-index-reaction writes down where it put every finish reaction,
+-- by base metal, and the four grinders, as it builds them, and publishes
+-- the lists with the array's length (THE ENTITY STAGE'S HANDOVER there).
+-- When that length is still the array's, and the first and last finish
+-- of every base metal and every grinder still hold the codes written
+-- down, the lists are the ones the walk below would make: RM takes its
+-- own reactions off before it builds them again, so the ones in the
+-- array are the ones that stage just built, and nothing outside RM's
+-- namespace holds REFINISH_STEEL_RXN_. Taken off the global here, so a
+-- run without a fresh handover walks. Otherwise the walk, as before.
+local handover = _G.refinish_rxn_handover
+_G.refinish_rxn_handover = nil
+local from_handover = false
+if handover and handover.len == #reactions then
+    local function matches()
+        for b_id, list in pairs(handover.finishes) do
+            if reactions[list[1]].code ~= handover.first_code[b_id]
+               or reactions[list[#list]].code ~= handover.last_code[b_id] then
+                return false
+            end
+        end
+        for _, g in ipairs(handover.grinders) do
+            if reactions[g.index].code ~= g.code then return false end
+        end
+        return true
+    end
+    local ok_h, good = pcall(matches)
+    from_handover = ok_h and good
+end
+
+if from_handover then
+    rs_payloads.FINISHES = handover.finishes
+    for _, g in ipairs(handover.grinders) do sort_into(g.code, g.index) end
+else
+    for _, rxn in ipairs(reactions) do
+        local code = rxn.code
+        if find(code, "REFINISH_STEEL_RXN_", 1, true) then
+            sort_into(code, rxn.index)
+        end
+    end
+end
+
+if LC then
+    t_en = LC.lap(from_handover and 'entities: phase 1, from the reaction handover'
+        or 'entities: every reaction read and sorted (phase 1)', t_en)
+end
 dprint("Payloads Built:")
 dprint("  Stone Grind Rxns: " .. #rs_payloads.STONE_GRIND)
 dprint("  Gem Grind Rxns: " .. #rs_payloads.GEM_GRIND)
@@ -102,8 +241,39 @@ end
 for civ_idx, civ in ipairs(processing_queue) do
     if civ.type == df.historical_entity_type.Civilization and civ.entity_raw then
         
-        if not processed_raws[civ.entity_raw] then
-            processed_raws[civ.entity_raw] = true
+        -- ---- EACH RAW ONCE ----
+        -- Keyed by the object it used to be, which never matched: DFHack
+        -- makes a new userdata for every read of a field that points at
+        -- an object (LuaWrapper.cpp push_object_ref), so two reads of one
+        -- entity_raw are equal under == but are different table keys.
+        -- Every civilization was processed, and every one after the first
+        -- of its raw walked the raw's whole permitted list again only to
+        -- find every reaction already there: what it granted never
+        -- changed.
+        --
+        -- So the raws done are kept by code and told apart with ==, which
+        -- compares what they point at. Not by code alone (2026-10-01, the
+        -- first form of this fix): DF allows two distinct raws to declare
+        -- one [ENTITY:...] code (refinish-module-evaluate-permissions.lua,
+        -- ENTITY CODE COLLISION CHECK), and each has its own permitted
+        -- list, which the old loop granted to and keyed by code would not.
+        local raw = civ.entity_raw
+        local raw_code = raw.code
+        local done = processed_raws[raw_code]
+        local seen = false
+        if done then
+            for _, r in ipairs(done) do
+                if r == raw then
+                    seen = true
+                    break
+                end
+            end
+        else
+            done = {}
+            processed_raws[raw_code] = done
+        end
+        if not seen then
+            done[#done + 1] = raw
             dprint("\nEvaluating Entity Code: " .. tostring(civ.entity_raw.code) .. " (Queue Index: " .. civ_idx .. ")")
             
             -- FETCH EXACT PRE-CALCULATED LOGIC FROM CACHE
@@ -161,9 +331,14 @@ for civ_idx, civ in ipairs(processing_queue) do
                     
                     table.sort(valid_injections)
 
+                    local t_ins = LC and LC.now()
                     for _, target_idx in ipairs(valid_injections) do
                         permitted_rxns:insert('#', target_idx)
                         injected_count = injected_count + 1
+                    end
+                    if LC then
+                        LC.add('entities: permission inserts', LC.now() - t_ins,
+                            injected_count, civ.entity_raw.code)
                     end
                     
                     if injected_count > 0 then
@@ -183,6 +358,7 @@ for civ_idx, civ in ipairs(processing_queue) do
     end
 end
 
+if LC then LC.lap('entities: civ sweep, inserts included', t_en) end
 _G.refinish_entity_loaded = true
 
 dprint("\n==================================================")
@@ -194,6 +370,5 @@ if debug_file then
     debug_file = nil
 end
 
-if _G.refinish_log_event then _G.refinish_log_event("INDEX ENTITY: Global UI Unlock Complete. " .. count .. " reactions injected across " .. entities_updated .. " civs.") end
-print(string.format("Global UI Unlock Complete: %d custom reactions injected across %d capable civilizations.", count, entities_updated))
-print("==================================================")
+log('DETAIL', string.format('Civ permission unlock complete: %d reactions'
+    .. ' granted across %d civilizations.', count, entities_updated))

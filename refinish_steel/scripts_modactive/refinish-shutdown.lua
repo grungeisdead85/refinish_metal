@@ -2,10 +2,10 @@
 -- ==========================================
 -- REFINISH METAL: PIPELINE SHUTDOWN
 -- ==========================================
--- Clears all injected assets from RAM. In AUTOSAVE mode, items
--- are washed to JSON first via refinish-save. In HOTSAVE mode,
--- the save step is skipped entirely; items carry their own
--- mat_index values.
+-- Clears all injected assets from RAM. Items are never touched: they
+-- keep their own mat_index values, and the next startup's ledger remap
+-- moves them by name. The save wash that used to run first
+-- (refinish-save.lua, the AUTOSAVE protocol) was retired 2026-09-29.
 --
 -- Per-step timing is logged. Debug mode shows a telemetry prompt.
 -- ==========================================
@@ -13,41 +13,132 @@
 local RefinishPrompt = reqscript('refinish-prompt').RefinishPrompt
 local THEME = reqscript('refinish-theme').get_current_theme()
 
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot, here the step a line belongs to.
+-- Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'SHUTDOWN'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
 local args = {...}
 local force_silent = (args[1] == 'SILENT')
+
+-- ---- HOW LOUD THE SUMMARY IS ----
+-- Quiet is for faults and the few confirmations a player wants at a
+-- glance, not every subsystem finishing. So the summary is COMPLETE
+-- only when a player ran this by hand; DETAIL inside a save cycle,
+-- where the cycle's own summary is the one that pops; INFO for the
+-- other automatic runs (the ESC menu, a panel rebuild), which Normal
+-- still shows.
+local function summary_type()
+    if not force_silent then return 'COMPLETE' end
+    if _G.refinish_autosave_in_progress then return 'DETAIL' end
+    return 'INFO'
+end
 
 local msg_setting = dfhack.persistent.getSiteData('refinish_config_msg')
 if not msg_setting or msg_setting == "" then msg_setting = 'GUIDED' end
 
--- ==========================================
--- PROTOCOL CHECK
--- In HOTSAVE mode, refinish-save is skipped entirely.
--- Items are never washed: they carry their own mat_index.
--- The clear sequence runs regardless of protocol.
--- ==========================================
-local save_protocol = dfhack.persistent.getSiteData('refinish_config_save_protocol')
-if not save_protocol or save_protocol == "" then save_protocol = 'AUTOSAVE' end
-
 local function execute_shutdown()
-    print("==================================================")
-    print("REFINISH STEEL: INITIATING SHUTDOWN")
-    print("==================================================")
-    if _G.refinish_log_event then _G.refinish_log_event("SHUTDOWN: Sequence initiated (Silent: " .. tostring(force_silent) .. ", Protocol: " .. save_protocol .. ").") end
+    log('DETAIL', 'Sequence initiated (silent: ' .. tostring(force_silent)
+        .. ').', 'SEQUENCE')
+
+    -- ---- RM'S SERVICES STOP, FIRST ----
+    -- Before the ledger snapshot and every clear: the dispatcher and the
+    -- services riding it (refinish_steel.lua, RM'S SERVICES FOLLOW THE
+    -- DATA), so nothing of theirs polls while the data is out of RAM, and
+    -- the stockpile windows hand their twins' flags back while the twins
+    -- still exist. The modules stop in STEP 5, first thing in
+    -- clear_module_assets.
+    pcall(function()
+        local svc = _G.refinish_services
+        if svc and svc.stop then svc.stop() end
+    end)
 
     local shutdown_clock = os.clock()
     local t = shutdown_clock
 
     -- ==========================================
-    -- STEP 1: SAVE PAYLOAD (Autosave protocol only)
+    -- STEP 0: LEDGER SNAPSHOT
     -- ==========================================
-    local t_save = 0
-    if save_protocol == 'AUTOSAVE' then
-        dfhack.run_script('refinish-save')
-        t_save = os.clock() - t
-        if _G.refinish_log_event then _G.refinish_log_event(string.format("SHUTDOWN: Save payload complete (%.3fs).", t_save)) end
-    else
-        if _G.refinish_log_event then _G.refinish_log_event("SHUTDOWN: Hotsave mode; skipping refinish-save.") end
-    end
+    -- Records id to index for the array as it stands RIGHT NOW, which
+    -- is the layout every object being saved is expressed in. Startup
+    -- reads it back after the rebuild and moves each object by name.
+    --
+    -- FIRST, because the clear below dismantles the array. A snapshot
+    -- taken after it describes something no object is carrying.
+    -- Measured the hard way in the hotsave branch: written between the
+    -- two clears it recorded 63 materials instead of 441.
+    --
+    -- It belongs here because the save hook and every manual or hard
+    -- shutdown reach the clear through this file. The autosave cycle
+    -- bypasses shutdown and carries its own copy of this at the top of
+    -- its cycle.
+    --
+    -- Why it cannot be left to startup's write alone: that one runs
+    -- once per load, and the array changes after it. A just in time
+    -- injection appends to it, and a hotsave cycle rebuilds it in a
+    -- different order. Either one leaves startup's snapshot describing
+    -- a layout nothing is using.
+    -- ==========================================
+    -- if_changed: when nothing has moved since the last write, the stored
+    -- ledger already describes this layout (refinish-ledger, UNCHANGED
+    -- SINCE THE LAST WRITE); a just in time injection or a rebuild in
+    -- another order is caught and written in full.
+    pcall(function()
+        dfhack.script_environment('refinish-ledger').write({ if_changed = true })
+    end)
+
+    -- ==========================================
+    -- STEP 1: SAVE PAYLOAD (retired 2026-09-29)
+    -- ==========================================
+    -- Was the AUTOSAVE protocol's wash: finished objects rewritten to
+    -- their base metals, their finishes kept in a JSON payload for
+    -- startup to restore. MEASURED the same day that neither game save
+    -- needs it: under HOTSAVE a save & continue and a save & quit each
+    -- brought all 17 refinished objects back with no payload in either
+    -- direction, on injection order and the ledger alone. Objects keep
+    -- their materials through every save now. A save the old line wrote
+    -- is migrated once at load (refinish-startup, Step 7).
+    --
+    -- The clock restarts so the timings below still exclude the ledger
+    -- write above.
     t = os.clock()
 
     -- ==========================================
@@ -55,7 +146,8 @@ local function execute_shutdown()
     -- ==========================================
     dfhack.run_script('refinish-clear-entity')
     local t_clr_ent = os.clock() - t
-    if _G.refinish_log_event then _G.refinish_log_event(string.format("SHUTDOWN: Entity permissions cleared (%.3fs).", t_clr_ent)) end
+    log('DETAIL', string.format('Entity permissions cleared (%.3fs).',
+        t_clr_ent), 'CLEAR_ENTITY')
     t = os.clock()
 
     -- ==========================================
@@ -63,7 +155,8 @@ local function execute_shutdown()
     -- ==========================================
     dfhack.run_script('refinish-clear-reaction')
     local t_clr_rxn = os.clock() - t
-    if _G.refinish_log_event then _G.refinish_log_event(string.format("SHUTDOWN: Reactions cleared (%.3fs).", t_clr_rxn)) end
+    log('DETAIL', string.format('Reactions cleared (%.3fs).', t_clr_rxn),
+        'CLEAR_REACTIONS')
     t = os.clock()
 
     -- ==========================================
@@ -71,7 +164,8 @@ local function execute_shutdown()
     -- ==========================================
     dfhack.run_script('refinish-clear')
     local t_clr_mat = os.clock() - t
-    if _G.refinish_log_event then _G.refinish_log_event(string.format("SHUTDOWN: Materials cleared (%.3fs).", t_clr_mat)) end
+    log('DETAIL', string.format('Materials cleared (%.3fs).', t_clr_mat),
+        'CLEAR_MATERIALS')
 
     -- ==========================================
     -- STEP 5: CLEAR MODULE ASSETS
@@ -88,25 +182,17 @@ local function execute_shutdown()
     -- ==========================================
     local t_total = os.clock() - shutdown_clock
 
-    -- Write to the autosave telemetry sub-table if it exists.
-    -- During an autosave cycle, refinish-autosave calls us with
-    -- 'SILENT' and reads these values back afterward.
-    if _G.refinish_telemetry and _G.refinish_telemetry.last_save then
-        _G.refinish_telemetry.last_save.t_save = t_save
-        _G.refinish_telemetry.last_save.t_clr_ent = t_clr_ent
-        _G.refinish_telemetry.last_save.t_clr_rxn = t_clr_rxn
-        _G.refinish_telemetry.last_save.t_clr_mat = t_clr_mat
-    end
+    -- Nothing is written to _G.refinish_telemetry.last_save any more.
+    -- That table is the autosave cycle's report, and the cycle stopped
+    -- coming through this file when its AUTOSAVE branch was retired
+    -- (2026-09-29). A manual shutdown or the save hook writing its clear
+    -- timings there would mix them into another cycle's figures.
 
-    if _G.refinish_log_event then
-        _G.refinish_log_event(string.format(
-            "SHUTDOWN: Complete (%.3fs); Save:%.3f | Ent:%.3f | Rxn:%.3f | Mat:%.3f",
-            t_total, t_save, t_clr_ent, t_clr_rxn, t_clr_mat
-        ))
-    end
-
-    print(string.format("Refinish Metal: Shutdown complete (%.3fs). Mod is dormant.", t_total))
-    print("==================================================")
+    -- The summary carries every step's timing, so the steps above are
+    -- DETAIL. How loud it is depends on who asked: see summary_type.
+    log(summary_type(), string.format(
+        'Shutdown complete (%.3fs); mod is dormant. Ent:%.3f | Rxn:%.3f | Mat:%.3f',
+        t_total, t_clr_ent, t_clr_rxn, t_clr_mat), 'SEQUENCE')
 
     if force_silent then return end
 
@@ -119,16 +205,14 @@ local function execute_shutdown()
         local report = string.format(
             "Shutdown Complete (%.3fs)\n\n" ..
             "--- CLEAR TIMING ---\n" ..
-            "Save Payload:     %.3fs\n" ..
             "Clear Entities:   %.3fs\n" ..
             "Clear Reactions:  %.3fs\n" ..
             "Clear Materials:  %.3fs\n\n" ..
-            "Protocol: %s\n" ..
             "It is now safe to manually save.",
-            t_total, t_save, t_clr_ent, t_clr_rxn, t_clr_mat, save_protocol
+            t_total, t_clr_ent, t_clr_rxn, t_clr_mat
         )
         RefinishPrompt{
-            frame_h = 18,
+            frame_h = 16,
             frame_w = 55,
             text = report,
             on_ok = function() end
@@ -153,7 +237,7 @@ else
         text_pen = THEME.PRI,
         on_yes = function() execute_shutdown() end,
         on_no = function()
-            if _G.refinish_log_event then _G.refinish_log_event("SHUTDOWN: User canceled manual shutdown prompt.") end
+            log('INFO', 'User canceled the manual shutdown prompt.', 'PROMPT')
         end
     }:show()
 end

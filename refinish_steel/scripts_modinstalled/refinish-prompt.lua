@@ -5,6 +5,50 @@ local gui = require('gui')
 local widgets = require('gui.widgets')
 local theme_engine = reqscript('refinish-theme') -- INJECT THE THEME TOOL
 
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the button that was pressed. The
+-- body carries the start of the prompt's text, so each line says
+-- which prompt it answered.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'PROMPT'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
 RefinishPrompt = defclass(RefinishPrompt, gui.ZScreenModal)
 RefinishPrompt.ATTRS = {
     focus_path = 'refinish/prompt',
@@ -53,20 +97,22 @@ function RefinishPrompt:init()
     -- Strip newlines so the log entry stays on one line
     context = context:gsub("\n", " ")
 
+    -- DETAIL: a button press is debugging material. The script that
+    -- raised the prompt logs what the choice led to.
     self.action_yes = function()
-        if _G.refinish_log_event then _G.refinish_log_event("PROMPT: [Yes] " .. context) end
+        log('DETAIL', context, 'YES')
         self:dismiss()
         self.on_yes()
     end
 
     self.action_no = function()
-        if _G.refinish_log_event then _G.refinish_log_event("PROMPT: [No] " .. context) end
+        log('DETAIL', context, 'NO')
         self:dismiss()
         if self.on_no then self.on_no() end
     end
 
     self.action_ok = function()
-        if _G.refinish_log_event then _G.refinish_log_event("PROMPT: [OK] " .. context) end
+        log('DETAIL', context, 'OK')
         self:dismiss()
         if self.on_ok then self.on_ok() end
     end

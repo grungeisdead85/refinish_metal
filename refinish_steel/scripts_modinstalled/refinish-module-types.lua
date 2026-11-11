@@ -519,6 +519,21 @@ REAGENT_TYPES = {
         needs_metal_id = false,
     },
 
+    -- Lye in a container. Vanilla writes this reagent as
+    -- LIQUID_MISC:NONE:LYE (soap, reaction_other.txt): the builtin
+    -- LYE material in a LIQUID_MISC item. Pair it with a container
+    -- reagent that CONTAINS it, exactly like WATER above. Used by
+    -- the pulp reactions: lye is vanilla's alkali, made from the ash
+    -- this module produces.
+    LYE = {
+        item_type      = df.item_type.LIQUID_MISC,     --  73, no subtypes
+        mat_type       = df.builtin_mats.LYE,          --  11, builtin lye
+        mat_index      = -1,
+        reaction_class = "",
+        needs_mat_id   = false,
+        needs_metal_id = false,
+    },
+
     -- Generic liquid. mat_type resolved from mat_id if given.
     -- For non-inorganic liquids (lye=11, milk, etc.) the mat_type
     -- must be specified directly since they aren't in the inorganic
@@ -2027,7 +2042,7 @@ REAGENT_TYPES = {
 
     -- ----- HEADWEAR -----
     -- match any headwear
-    HEADWARE_ANY = { 
+    HEADWEAR_ANY = { 
         item_type = df.item_type.HELM,         --  28
         mat_type = -1, 
         mat_index = -1, 
@@ -2745,6 +2760,13 @@ PRODUCT_TYPES = {
     LIQUID_MISC_INORGANIC = { item_type = 73, mat_type = 0 },  -- acid/alkali output
     BAR_POTASH            = { item_type = 0,  mat_type = 8 },  -- potash bar output
 
+    -- A glob of an inorganic material. Dimensioned like fat and wax,
+    -- so counts are units of 150. Paper pulp and paraffin wax are
+    -- produced as globs because vanilla's screw press (PAPER_SLURRY)
+    -- and wax crafting (WAX) consume globs by reaction class, which
+    -- is how those products reach vanilla with no further reactions.
+    GLOB        = { item_type = 75, mat_type = 0  },  -- Glob (paper pulp, wax)
+
     -- Builtin-material bars. The material lives in mat_type and there
     -- is no inorganic to look up, so mat_index stays -1 and the product
     -- names no material of its own.
@@ -2886,6 +2908,42 @@ BUILDING_TYPES = {
         custom  = { -1, -1 },
     },
 
+    -- Mechanic's Workshop (8). workshop_type 8 is Mechanics in the live
+    -- enum dump (df_data_reference, building_types_and_subtypes_and_
+    -- skills_numbers.txt), and workshops are building_type 13, as MASON
+    -- and CRAFTSMAN above. First used by Making Fuel's fuel burner.
+    MECHANIC = {
+        type    = { 13 },
+        subtype = { 8 },
+        custom  = { -1 },
+    },
+
+    -- The still is workshop subtype 15 in the same enum dump, and a
+    -- workshop, building_type 13. First used by Making Fuel's spirit
+    -- distillation.
+    STILL = {
+        type    = { 13 },
+        subtype = { 15 },
+        custom  = { -1 },
+    },
+
+    -- The farmer's workshop is workshop subtype 1 (df.workshop_type.Farmers,
+    -- df-structures), building_type 13. First used by Making Fuel's manure.
+    FARMERS = {
+        type    = { 13 },
+        subtype = { 1 },
+        custom  = { -1 },
+    },
+
+    -- The kitchen is workshop subtype 19 in the same enum dump, and a
+    -- workshop, building_type 13. First used by Making Fuel's boiling
+    -- reactions: pitch, glue and oil sand.
+    KITCHEN = {
+        type    = { 13 },
+        subtype = { 19 },
+        custom  = { -1 },
+    },
+
     -- Quern (17) + Millstone (22) — the two milling workshops.
     -- ArgMOD lists BOTH on all 41 of his grinding reactions so the
     -- player can use either, which is structurally identical to the
@@ -2900,6 +2958,29 @@ BUILDING_TYPES = {
     ASHERY = {
         type    = { 13 },
         subtype = { 20 },
+        custom  = { -1 },
+    },
+
+    -- Dyer's Shop (21). Measured, not inferred: the ACACIA_BARK_DYE
+    -- path map stores building.type 13 with building.subtype 21, and
+    -- that reaction carries [BUILDING:DYER:NONE] in its raw strings.
+    --
+    -- Needed by anything producing a POWDER_MISC material flagged
+    -- IS_DYE. All 71 vanilla dyes are made here, so it is the only
+    -- place a player will look for the job.
+    DYER = {
+        type    = { 13 },
+        subtype = { 21 },
+        custom  = { -1 },
+    },
+
+    -- Tanner's Shop. Workshop (13), subtype 12.
+    -- Added for the hide chain: raw skin globs are combined and worked
+    -- into rawhide here, and the tanner then takes that rawhide through
+    -- vanilla's own TAN_A_HIDE with nothing hijacked.
+    TANNER = {
+        type    = { 13 },
+        subtype = { 12 },
         custom  = { -1 },
     },
 
@@ -2948,18 +3029,16 @@ BUILDING_TYPES = {
         custom_code = "COMPOUNDER",
     },
 
+    -- Furnace class: building_type.Furnace (5) with
+    -- furnace_type.Custom (7), not Workshop (13) / Custom (23).
+    -- Must match the "class" the building was injected under or
+    -- the reaction is sent to a building class that does not
+    -- contain it.
     RETORT = {
-        type        = { 13 },
-        subtype     = { 23 },
+        type        = { 5 },
+        subtype     = { 7 },
         custom      = { -1 },
         custom_code = "MAKING_FUEL_RETORT",
-    },
-
-    ARC_FURNACE = {
-        type        = { 13 },
-        subtype     = { 23 },
-        custom      = { -1 },
-        custom_code = "MAKING_FUEL_ARC_FURNACE",
     },
 
     -- No building (adventure mode reactions)
@@ -2968,6 +3047,94 @@ BUILDING_TYPES = {
         subtype = {},
         custom  = {},
     },
+}
+
+
+-- ==========================================
+-- JOB ITEM VECTORS
+-- ==========================================
+-- DF keeps 136 separate item vectors and a reagent's vector_id says
+-- which one it searches. Several are gates nothing else in this schema
+-- can express: ANY_DEAD_DWARF is every corpse a butcher will refuse,
+-- ANY_MURDERED is exactly what it says, ANY_BUTCHERABLE is the
+-- complement, and there are ANY_CAN_ROT, ANY_MELT_DESIGNATED and
+-- ANY_RECENTLY_DROPPED besides.
+--
+-- THIS TABLE IS NOT THE AUTHORITY. The engine resolves a name through
+-- df.job_item_vector_id at build time and reports a miss loudly. This
+-- list exists so preflight can catch a typo offline, hours before the
+-- game would. If DF adds a vector tomorrow the engine finds it and
+-- this list does not need to know.
+--
+-- Enumerated from a live game on 2026-09-09 with refinish-corpse-probe,
+-- walking the enum by index from _first_item to _last_item. pairs() on
+-- a DFHack enum returns its metatable rather than its values, which is
+-- how an earlier build of that probe reported eleven entries with
+-- names like _complex and sizeof.
+JOB_ITEM_VECTORS = {
+        'ANY', 'IN_PLAY', 'ANY_ARTIFACT', 'WEAPON', 'ANY_WEAPON',
+        'ANY_SPIKE', 'ANY_TRUE_ARMOR', 'ANY_ARMOR_HELM',
+        'ANY_ARMOR_SHOES', 'SHIELD', 'ANY_ARMOR_GLOVES',
+        'ANY_ARMOR_PANTS', 'QUIVER', 'SPLINT', 'ORTHOPEDIC_CAST',
+        'CRUTCH', 'BACKPACK', 'AMMO', 'WOOD', 'BOULDER', 'ROCK',
+        'ANY_REFUSE', 'ANY_GOOD_FOOD', 'ANY_AUTO_CLEAN',
+        'ANY_EXTRACTABLE', 'ANY_BUTCHERABLE', 'ANY_FURNITURE',
+        'ANY_CAGE_OR_TRAP', 'ANY_EDIBLE_RAW', 'ANY_EDIBLE_CARNIVORE',
+        'ANY_EDIBLE_BONECARN', 'ANY_EDIBLE_VERMIN',
+        'ANY_EDIBLE_VERMIN_BOX', 'ANY_CAN_ROT', 'ANY_MURDERED',
+        'ANY_DEAD_DWARF', 'ANY_GOES_IN_CHEST', 'ANY_GOES_IN_CABINET',
+        'ANY_GOES_IN_WEAPONRACK', 'ANY_GOES_IN_ARMORSTAND', 'DOOR',
+        'FLOODGATE', 'HATCH_COVER', 'GRATE', 'CAGE', 'FLASK',
+        'WINDOW', 'GOBLET', 'INSTRUMENT', 'TOY', 'BUCKET', 'BARREL',
+        'CHAIN', 'ANIMALTRAP', 'BED', 'TRACTION_BENCH', 'CHAIR',
+        'COFFIN', 'TABLE', 'STATUE', 'QUERN', 'MILLSTONE', 'BOX',
+        'BIN', 'ARMORSTAND', 'WEAPONRACK', 'CABINET', 'ANVIL',
+        'CATAPULTPARTS', 'BALLISTAPARTS', 'SIEGEAMMO', 'TRAPPARTS',
+        'ANY_WEBS', 'PIPE_SECTION', 'ANY_ENCASED',
+        'ANY_IN_CONSTRUCTION', 'DRINK', 'ANY_DRINK', 'LIQUID_MISC',
+        'POWDER_MISC', 'ANY_COOKABLE', 'ANY_GLASSABLE', 'VERMIN',
+        'PET', 'ANY_CRITTER', 'COIN', 'GLOB', 'ANY_RECENTLY_DROPPED',
+        'ANY_MELT_DESIGNATED', 'TRAPCOMP', 'BAR', 'SMALLGEM',
+        'BLOCKS', 'ROUGH', 'CORPSE', 'FIGURINE', 'AMULET', 'SCEPTER',
+        'CROWN', 'RING', 'EARRING', 'BRACELET', 'GEM', 'CORPSEPIECE',
+        'REMAINS', 'MEAT', 'FISH', 'FISH_RAW', 'SEEDS', 'PLANT',
+        'SKIN_TANNED', 'PLANT_GROWTH', 'THREAD', 'CLOTH', 'TOTEM',
+        'PANTS', 'CHEESE', 'FOOD', 'BALLISTAARROWHEAD', 'ARMOR',
+        'SHOES', 'HELM', 'GLOVES', 'TOOL', 'SLAB', 'EGG',
+        'POSSIBLE_CONTAINER', 'ANY_CORPSE', 'BOOK', 'FOOD_STORAGE',
+        'INSTRUMENT_STATIONARY', 'SHEET', 'BRANCH', 'BAG', 'MAGICAL',
+        'BOLT_THROWER_PARTS',
+}
+
+
+-- ==========================================
+-- TOOL USES
+-- ==========================================
+-- has_tool_use is resolved by name through df.tool_uses, and until now
+-- nothing checked the name. A miss used to fall to -1, the WILDCARD,
+-- so a typo opened the filter rather than narrowing it. The engine now
+-- announces a miss; this list is what lets preflight catch it first.
+--
+-- Same doctrine as JOB_ITEM_VECTORS: NOT the authority. The engine
+-- resolves against the live enum, so a tool use DF adds tomorrow still
+-- works. This exists so a typo fails offline instead of quietly
+-- widening a filter in a running fort.
+--
+-- Enumerated from a live game on 2026-09-09 with
+-- refinish-corpse-probe audit, by index from _first_item to
+-- _last_item. All 27, NONE included, because NONE is a legal value
+-- meaning the item must have no tool use at all.
+TOOL_USES = {
+        'NONE', 'LIQUID_COOKING', 'LIQUID_SCOOP',
+        'GRIND_POWDER_RECEPTACLE', 'GRIND_POWDER_GRINDER',
+        'MEAT_CARVING', 'MEAT_BONING', 'MEAT_SLICING',
+        'MEAT_CLEAVING', 'HOLD_MEAT_FOR_CARVING', 'MEAL_CONTAINER',
+        'LIQUID_CONTAINER', 'FOOD_STORAGE', 'HIVE', 'NEST_BOX',
+        'SMALL_OBJECT_STORAGE', 'TRACK_CART', 'HEAVY_OBJECT_HAULING',
+        'STAND_AND_WORK_ABOVE', 'ROLL_UP_SHEET',
+        'PROTECT_FOLDED_SHEETS', 'CONTAIN_WRITING', 'BOOKCASE',
+        'DISPLAY_OBJECT', 'PLACE_OFFERING', 'DIVINATION',
+        'GAMES_OF_CHANCE',
 }
 
 
@@ -3035,6 +3202,25 @@ BUILDING_CAPABILITY_GATES = {
         jobs = { "WOOD_BURNER" },
     },
 
+    -- Dyer's Shop: requires the dyer profession.
+    --
+    -- A building added to BUILDING_TYPES needs an entry here as well.
+    -- check_building_capability fails CLOSED on a name it does not
+    -- recognise, so a missing gate is silent: the reaction builds,
+    -- resolves to the right workshop, and is then rejected for every
+    -- civ with nothing in the log to say so. That is how the first
+    -- four dye reactions came out permitted for nobody.
+    DYER = {
+        gate_type = "permitted_job",
+        jobs = { "DYER" },
+    },
+
+    -- job 12, TANNER
+    TANNER = {
+        gate_type = "permitted_job",
+        jobs = { "TANNER" },
+    },
+
     -- Smelter: FURNACE_OPERATOR (17) is what runs a smelter, and the
     -- smelter is the only building that produces metal bars, whether
     -- from ore or by alloying.
@@ -3090,6 +3276,41 @@ BUILDING_CAPABILITY_GATES = {
         gate_type = "permitted_job",
         jobs = { "METALSMITH", "WEAPONSMITH", "ARMORER",
                  "BLACKSMITH", "METALCRAFTER" },
+    },
+
+    -- Mechanic's Workshop: the mechanic profession. Verified present on
+    -- live entity raws as jobs.permitted_job.MECHANIC, set by
+    -- [PERMITTED_JOB:MECHANIC] (df_data_reference, the entities path
+    -- maps). Missing at first, which is exactly the silent failure the
+    -- DYER note describes: the fuel burner recipe built, resolved to the
+    -- right workshop, and was refused for every civ.
+    MECHANIC = {
+        gate_type = "permitted_job",
+        jobs = { "MECHANIC" },
+    },
+
+    -- The still: [PERMITTED_JOB:BREWER] in the vanilla dwarven entity,
+    -- and permitted_job.BREWER in the entities path map. Added together
+    -- with the first recipe that needs it, so the silent refusal the
+    -- MECHANIC note records cannot happen here.
+    STILL = {
+        gate_type = "permitted_job",
+        jobs = { "BREWER" },
+    },
+
+    -- Farmer's Workshop: whoever threshes or grows. Both names verified
+    -- present in df.profession (df-structures, df.d_basics.xml).
+    FARMERS = {
+        gate_type = "permitted_job",
+        jobs = { "THRESHER", "PLANTER" },
+    },
+
+    -- The kitchen: [PERMITTED_JOB:COOK] in the vanilla dwarven entity,
+    -- and permitted_job.COOK in the entities path map. Added together
+    -- with the first recipes that need it, as the still's was.
+    KITCHEN = {
+        gate_type = "permitted_job",
+        jobs = { "COOK" },
     },
 
     -- Mill, Ashery, and the two custom workshops: no capability gate.
@@ -3163,7 +3384,12 @@ SKILL_MAP = {
     WOODCRAFT       = 31,   -- Wood Crafting
     BONECARVE       = 36,   -- Bone Carving
     LEATHERWORK     = 35,   -- Leatherworking
+    TANNER          = 12,   -- Tanning, the tanner's shop skill
     CARPENTRY       = 2,    -- Carpentry
+    MECHANICS       = 54,   -- Mechanics (mechanic's workshop)
+    BREWING         = 14,   -- Brewing (still)
+    COOK            = 20,   -- Cooking (kitchen)
+    PLANT           = 21,   -- Growing (planting, fertilizing; manure at the farmer's workshop)
 
     -- Workshop skills: textiles and misc
     WEAVING         = 13,   -- Weaving (loom)
@@ -3172,14 +3398,26 @@ SKILL_MAP = {
     SOAP_MAKING     = 65,   -- Soap Making
     MILLING         = 16,   -- Milling (quern/millstone)
     LYE_MAKING      = 64,   -- Lye Making (ashery, chemist)
-    LYE_MAKING      = 64,   -- Lye Making (ashery, chemist)
     PRESSING        = 111,  -- Pressing (screw press)
+
+    -- Papermaking. The pulp reactions run at the quern and millstone
+    -- with the same skill vanilla's slurry reaction uses. Resolved
+    -- from the enum rather than hardcoded so the number cannot
+    -- drift; the constants above predate this entry and stay as
+    -- their measured values.
+    PAPERMAKING     = df.job_skill.PAPERMAKING,
 
     -- Glazing. Verified as 110 from the GLAZE_CRAFT_ASH path map,
     -- not inferred: that reaction carries [SKILL:GLAZING] in raws and
     -- stores skill = 110.
     GLAZING         = 110,  -- Glazing (kiln)
     POTASH_MAKING   = 66,   -- Potash Making (ashery, kiln, chemist)
+
+    -- Plant Processing (17). Measured from the ACACIA_BARK_DYE path
+    -- map, which stores skill 17 against [SKILL:PROCESSPLANTS].
+    -- This is the dyer's shop skill. Match it to DYER or the job
+    -- goes to the wrong dwarves.
+    PROCESSPLANTS   = 17,   -- Plant Processing (dyer's shop)
 }
 
 
@@ -3276,6 +3514,98 @@ MATERIAL_CLASS_PRESETS = {
         },
     },
 
+    SOIL = {
+        clear = {
+            "IS_METAL", "IS_GEM", "IS_STONE", "IS_CERAMIC", "IS_GLASS",
+            "ITEMS_METAL", "ITEMS_BARRED", "ITEMS_SCALED", "ITEMS_HARD",
+            "ITEMS_WEAPON", "ITEMS_WEAPON_RANGED",
+            "ITEMS_AMMO", "ITEMS_DIGGER",
+            "ITEMS_ARMOR", "ITEMS_ANVIL",
+            "ITEMS_QUERN",
+        },
+        set = {
+            "IS_STONE",
+        },
+    },
+
+    -- Liquids kept in containers: tars, oils, spirits, ammonia.
+    --
+    -- Vanilla's own inorganic liquid carries LIQUID_MISC_OTHER and
+    -- nothing stone-like; see inorganic_other.txt line 121. That one
+    -- flag is what marks a material as a misc liquid.
+    --
+    -- WHY THIS EXISTS. Before it, every liquid in a module fell to
+    -- RAW, which preserves the donor's flags, and the RAW donor is
+    -- plaster. A bucket of coal tar was therefore IS_STONE,
+    -- ITEMS_HARD and ITEMS_QUERN: a hard stone you could carve a
+    -- quern from, showing up in stone stockpile settings and craft
+    -- menus. The clear list mirrors SOIL's; only the set differs.
+    LIQUID = {
+        clear = {
+            "IS_METAL", "IS_GEM", "IS_STONE", "IS_CERAMIC", "IS_GLASS",
+            "ITEMS_METAL", "ITEMS_BARRED", "ITEMS_SCALED", "ITEMS_HARD",
+            "ITEMS_WEAPON", "ITEMS_WEAPON_RANGED",
+            "ITEMS_AMMO", "ITEMS_DIGGER",
+            "ITEMS_ARMOR", "ITEMS_ANVIL",
+            "ITEMS_QUERN",
+        },
+        set = {
+            "LIQUID_MISC_OTHER",
+        },
+    },
+
+    -- Dyes: powders DF's hardcoded dye jobs will accept.
+    --
+    -- MixDye, DyeThread, DyeCloth and DyeLeather are built in job
+    -- types with no reaction behind them. DF finds their inputs by
+    -- scanning for POWDER_MISC items whose material has IS_DYE set,
+    -- and matches colour jobs on the material's powder_dye, which
+    -- apply_dye_color (refinish-module-inject.lua) writes after this
+    -- preset. IS_DYE alone takes a dye into plain dye jobs, where it
+    -- dyes nothing (measured).
+    --
+    -- DECLARE DYES ON A PLANT HOST, not as inorganics. Measured
+    -- 2026-09-23: DF stores an inorganic powder as its bag, under
+    -- Furniture as Bags, listed nowhere (vanilla plaster does the
+    -- same). Registered under Milled Plants it is listed by name and
+    -- never hauled there. As a plant material it lists and hauls under
+    -- Milled Plants like every vanilla dye. The two powder flags set
+    -- below are the plant powder claim, true only on a plant.
+    --
+    -- WHY THIS EXISTS, beyond the flag. Two reasons, same shape as
+    -- the LIQUID case above.
+    --
+    -- First, a dye falling to RAW inherits plaster and becomes a
+    -- carveable stone, exactly the bug LIQUID was added to kill.
+    --
+    -- Second, and specific to powders: refinish-scan.lua renames
+    -- every powder to "[solid name] dust", and its only exclusion
+    -- is a word search on the powder name. That word list would not
+    -- catch a colour word, so a dye named for its colour would come
+    -- out as "mauve dust". The rename is gated on IS_STONE, IS_METAL,
+    -- IS_GEM, SOIL_ANY or SOIL_SAND, so a material carrying none of
+    -- them is never reached and keeps the powder name it was given.
+    -- The clear list below is what buys that, not an accident of it.
+    DYE = {
+        clear = {
+            "IS_METAL", "IS_GEM", "IS_STONE", "IS_CERAMIC", "IS_GLASS",
+            "ITEMS_METAL", "ITEMS_BARRED", "ITEMS_SCALED", "ITEMS_HARD",
+            "ITEMS_WEAPON", "ITEMS_WEAPON_RANGED",
+            "ITEMS_AMMO", "ITEMS_DIGGER",
+            "ITEMS_ARMOR", "ITEMS_ANVIL",
+            "ITEMS_QUERN",
+        },
+        set = {
+            "IS_DYE",
+            -- Vanilla parity: every vanilla dye carries both (measured
+            -- by making-fuel-dye-probe). POWDER_MISC_PLANT names the
+            -- Milled Plants storage category the module registers its
+            -- dyes into (refinish-stockpile-organic.lua, claimed by making-fuel-stockpile-organic).
+            "POWDER_MISC",
+            "POWDER_MISC_PLANT",
+        },
+    },
+
     -- RAW: No clearing, no setting. Clone's flags are preserved
     -- exactly as-is. Use when the clone source already has the
     -- right flags, or when you want full manual control via
@@ -3332,6 +3662,23 @@ CLONE_SIGNATURES = {
         prefer        = {},
     },
 
+    -- Soil: scored against stones, not against vanilla soils.
+    --
+    -- The donor here is structural only. reset_to_neutral blanks
+    -- every material AND inorganic flag before the preset runs, and
+    -- the SOIL preset clears its list and sets nothing, so the
+    -- finished material carries no flags at all regardless of what
+    -- was cloned. Nothing a real soil donor has would survive the
+    -- reset, so there is no reason to hunt for one.
+    --
+    -- Stones are the most structurally neutral inorganic and the
+    -- signature is already proven, so this mirrors STONE.
+    SOIL = {
+        require_true  = { "IS_STONE" },
+        require_false = { "IS_METAL", "IS_GEM", "IS_GLASS" },
+        prefer        = {},
+    },
+
     -- Glass: look for IS_GLASS inorganics (modded worlds may have
     -- them, e.g. cobalt glass). In vanilla worlds, no IS_GLASS
     -- inorganic exists — the evaluator will fail to find a donor.
@@ -3341,6 +3688,35 @@ CLONE_SIGNATURES = {
         require_true  = { "IS_GLASS" },
         require_false = { "IS_METAL", "IS_GEM", "IS_STONE" },
         prefer        = { "ITEMS_HARD" },
+    },
+
+    -- Liquid: scored against stones, for the same reason SOIL is.
+    --
+    -- The donor is structural only. reset_to_neutral blanks every
+    -- flag before the preset runs, and the LIQUID preset then clears
+    -- its list and sets LIQUID_MISC_OTHER, so nothing a donor
+    -- carried survives either way. No vanilla inorganic is a good
+    -- liquid donor anyway: the one that exists is water ice, which
+    -- is a stone by flags.
+    LIQUID = {
+        require_true  = { "IS_STONE" },
+        require_false = { "IS_METAL", "IS_GEM", "IS_GLASS" },
+        prefer        = {},
+    },
+
+    -- Dye: scored against stones, for the same reason SOIL and
+    -- LIQUID are. The donor is structural only. reset_to_neutral
+    -- blanks every flag before the preset runs, and the DYE preset
+    -- then clears its list and sets IS_DYE, so nothing a donor
+    -- carried survives either way.
+    --
+    -- Scoring against vanilla dyes is not an option even though they
+    -- exist: every one of them is a PLANT material, and this table
+    -- scores inorganics.
+    DYE = {
+        require_true  = { "IS_STONE" },
+        require_false = { "IS_METAL", "IS_GEM", "IS_GLASS" },
+        prefer        = {},
     },
 
     -- RAW: No signature — the modder must accept whatever the

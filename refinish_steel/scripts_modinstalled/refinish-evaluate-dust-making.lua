@@ -19,6 +19,51 @@
 -- and consumed by boot's template caching system.
 -- ==========================================
 
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the step or thing a line is
+-- about. Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- Console prints only where they answer a typed command. A print only
+-- appears as the direct answer to a command typed into the DFHack
+-- console, and nowhere else. The one place that holds here is the
+-- diagnostic at the bottom, which runs only when this file is typed
+-- as a command rather than loaded as a module.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'EVAL_DUST'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
 local cached_result = nil
 
 
@@ -193,12 +238,14 @@ function get_best_dust_template(force_recalculate)
 
     cached_result = best
 
-    if best and _G.refinish_log_event then
-        _G.refinish_log_event(string.format(
-            "EVALUATE DUST: Best template: [%s] score=%d bag_idx=%d prod_idx=%d",
-            best.code, best.score, best.bag_idx, best.prod_idx))
-    elseif not best and _G.refinish_log_event then
-        _G.refinish_log_event("EVALUATE DUST: WARNING; No valid dust-making template found.")
+    -- WARNING, not ERROR: this is the cause, and the reaction injector
+    -- reports the consequence as an ERROR when it finds no template.
+    if best then
+        log('DETAIL', string.format('Best template: [%s] score=%d bag_idx=%d'
+            .. ' prod_idx=%d', best.code, best.score, best.bag_idx,
+            best.prod_idx), 'TEMPLATE')
+    else
+        log('WARNING', 'No valid dust-making template found.', 'TEMPLATE')
     end
 
     return cached_result
@@ -209,6 +256,8 @@ end
 -- CONSOLE DIAGNOSTIC OUTPUT
 -- ==========================================
 -- Run this script directly (not as module) to see all scored candidates.
+-- These prints stay: they only run when this file is typed as a
+-- command, so they are the direct answer to it.
 local function run_diagnostic()
     print("==================================================")
     print("REFINISH STEEL: DUST-MAKING REACTION EVALUATION")

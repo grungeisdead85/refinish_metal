@@ -13,6 +13,49 @@
 -- via dfhack.script_environment('refinish-evaluate-metal-making').
 -- ==========================================
 
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- Every line this file writes goes through log(), in the one grammar
+-- the log panel reads: SYSTEM SUBSYSTEM SUBJECT TYPE | body. The
+-- panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- SUBJECT is the correlation slot: the step or thing a line is
+-- about. Nil renders as a dash.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else, so
+-- anything this file needs to say lives in the log alone.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'EVAL_METAL'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
 local cached_evaluations = nil
 
 local VERBOSE_DEBUG = false -- Set to false later to quiet the console
@@ -312,12 +355,14 @@ function get_best_metal_template(force_recalculate)
 
     cached_best_template = best
 
-    if best and _G.refinish_log_event then
-        _G.refinish_log_event(string.format(
-            "EVALUATE METAL: Best template: [%s] score=%d rgt_idx=%d prod_idx=%d",
-            best.code, best.score, best.rgt_idx, best.prod_idx))
-    elseif not best and _G.refinish_log_event then
-        _G.refinish_log_event("EVALUATE METAL: WARNING; No valid metal-making template found.")
+    -- WARNING, not ERROR: this is the cause, and the reaction injector
+    -- reports the consequence as an ERROR when it finds no template.
+    if best then
+        log('DETAIL', string.format('Best template: [%s] score=%d rgt_idx=%d'
+            .. ' prod_idx=%d', best.code, best.score, best.rgt_idx,
+            best.prod_idx), 'TEMPLATE')
+    else
+        log('WARNING', 'No valid metal-making template found.', 'TEMPLATE')
     end
 
     return cached_best_template

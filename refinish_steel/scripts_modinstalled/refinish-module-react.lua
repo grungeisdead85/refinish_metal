@@ -24,6 +24,64 @@
 --   refinish-module-engine.lua (pipeline steps)
 -- ==========================================
 
+-- ==========================================
+-- LOG FUNNEL
+-- ==========================================
+-- RM's own, and peripheral rather than pipeline. Every line this file
+-- writes goes through log(), in the one grammar the log panel reads:
+-- SYSTEM SUBSYSTEM SUBJECT TYPE | body.
+--
+-- The panel filters on TYPE and nothing else, so each call site states
+-- its own:
+--   DETAIL   debugging material, shown in Debug only
+--   INFO     what a player might check during play, Info and up
+--   faults, and the few confirmations a player wants at a glance
+--   (COMPLETE, SYSTEM, ONLINE and the like), show in Quiet as well
+-- TYPE comes first so no call site can drop it unnoticed: a nil TYPE
+-- still renders, as UNTYPED, which shows at every Log Detail level
+-- instead of being guessed at.
+--
+-- A reaction or product this file could not build, or built wrong, is
+-- an ERROR: the player meets it in play. A declaration that fell back
+-- to something wider or to a default, while the reaction still works,
+-- is a WARNING.
+--
+-- SUBJECT is the correlation slot: the part of the reaction a line is
+-- about, or the module it concerns.
+--
+-- This replaces a log() that took the subsystem as an argument and
+-- let refinish-log guess TYPE from the words (read_type) unless a call
+-- site said otherwise.
+--
+-- Every line reaches the log on disk. Filtering is the panel's job
+-- alone, so there is no level check here.
+--
+-- No console prints. A print only appears as the direct answer to a
+-- command typed into the DFHack console, and nowhere else.
+-- ==========================================
+local LOG_SYS, LOG_SUB = 'REFINISH_METAL', 'MODULE_REACT'
+local rlog = nil
+pcall(function() rlog = reqscript('refinish-log') end)
+
+-- A reaction class no material carries. A reagent whose mat_token did
+-- not resolve is given it, so the slot matches nothing (see build_reagent,
+-- A MISS CLOSES THE GATE).
+local UNRESOLVED_TOKEN_CLASS = 'RM_UNRESOLVED_MAT_TOKEN'
+
+local function log(typ, msg, subject)
+    if not _G.refinish_log_event then return end
+    local line
+    if rlog then
+        line = rlog.compose(LOG_SYS, LOG_SUB, subject, typ, msg)
+    else
+        -- The composer failed to load. Same grammar, unsanitised.
+        line = string.format('%s %s %s %s | %s', LOG_SYS, LOG_SUB,
+            tostring(subject or '-'), tostring(typ or 'UNTYPED'),
+            tostring(msg))
+    end
+    _G.refinish_log_event(line)
+end
+
 local types = reqscript('refinish-module-types')
 
 -- Anchored, plain-text prefix test. Local copy of the engine's helper,
@@ -225,10 +283,10 @@ local itemdef_cache = {}
 -- Same failure shape as the ghost reaction cache use after free: a
 -- lookup table built from array positions that outlived the array.
 --
--- Two ways in. The tool injector calls this directly when it can reach
--- the module, and raises the global as a fallback for when it cannot.
--- resolve_item_subtype checks the global on every call, which costs one
--- table read and removes the ordering question entirely.
+-- One way in since 2026-10-01: the tool injector raises the global, and
+-- resolve_item_subtype checks it on every call, which costs one table
+-- read and removes the ordering question entirely. The injector used to
+-- call this directly as well, through a script lookup by name each time.
 -- ==========================================
 
 function invalidate_itemdef_cache()
@@ -236,7 +294,12 @@ function invalidate_itemdef_cache()
     _G.refinish_itemdef_cache_dirty = false
 end
 
-local function resolve_item_subtype(item_type, code)
+-- quiet suppresses the not-found line only. The warning below is
+-- correct when this is building a reagent and is nonsense when a key
+-- watcher is polling before injection has landed, which it does once
+-- a second until the itemdef arrives. Callers that pass quiet report
+-- their own deferral through their own once/clear state instead.
+local function resolve_item_subtype(item_type, code, quiet)
     -- Cheap gate, checked first. Anything that adds or removes an
     -- itemdef raises this flag, and one stale read here would write a
     -- wrong subtype into a reagent that then silently matches the
@@ -269,9 +332,9 @@ local function resolve_item_subtype(item_type, code)
     -- O(1) Instant Lookup
     local subtype = itemdef_cache[list_name][code]
     if not subtype then
-        if _G.refinish_log_event then
-            _G.refinish_log_event(string.format("MODULE REACT WARNING: itemdef '%s' not found in %s. slot left unrestricted.",
-            tostring(code), list_name))
+        if not quiet then
+log('WARNING', string.format("itemdef '%s' not found in %s. slot left unrestricted.",
+            tostring(code), list_name), 'ITEMDEF')
         end
         return -1
     end
@@ -281,9 +344,40 @@ end
 
 -- Kept so existing callers do not change. Tools were the only consumer
 -- before trapcomps arrived with the glass unit.
-local function resolve_tool_subtype(code)
-    return resolve_item_subtype(df.item_type.TOOL, code)
+-- item_type decides which itemdefs list the code is looked up in.
+-- This used to hardcode TOOL, so every subtype resolved against
+-- itemdefs.tools no matter what the reagent's type was. Trapcomps,
+-- weapons, armor, toys, instruments, ammo, shields, shoes, helms,
+-- gloves and pants all missed, warned, and left the slot
+-- unrestricted, which is why the three trapcomp char reactions each
+-- accepted any trapcomp. ITEMDEF_LISTS already had every entry;
+-- nothing was reaching them.
+--
+-- Defaults to TOOL so any caller that has not been updated behaves
+-- exactly as before.
+-- PUBLIC. refinish-resolve delegates here rather than keeping a
+-- second cache of the same thing; the tool injector already calls
+-- invalidate_itemdef_cache on both ends of every injection and every
+-- clear, so this is the copy that is kept correct.
+function resolve_tool_subtype(code, item_type, quiet)
+    return resolve_item_subtype(item_type or df.item_type.TOOL, code,
+                                quiet)
 end
+
+-- ---- PUBLISHED FOR THE HOT PATH ----
+-- refinish-resolve is called once per poll by watchers running at
+-- one frame. Reaching this function through reqscript there costs a
+-- script name resolution on every call: measured at roughly 2 ms,
+-- which was 407 ms of every wall second across two watchers and cost
+-- the fort seven frames a second.
+--
+-- A GLOBAL, NOT A CACHED ENVIRONMENT, on the far side. A reload
+-- builds a new environment holding a new itemdef_cache, so a held
+-- reference would keep answering from the old cache while the tool
+-- injector invalidates the new one. This line runs again on every
+-- load of this file, so the published function is always the live
+-- one.
+_G.refinish_resolve_tool_subtype = resolve_tool_subtype
 
 
 -- ==========================================
@@ -393,6 +487,10 @@ local REAGENT_FLAG_MAP = {
 local function build_reagent(rgt_def, base_reagent, mat_lookup, all_reagent_defs)
     local r = df.reaction_reagent_itemst:new()
     r:assign(base_reagent)
+    -- A tool the reagent names that is not injected. Handed back to the
+    -- caller, which leaves the whole reaction out: see A TOOL THAT DOES
+    -- NOT RESOLVE at the reagent loop.
+    local unresolved = nil
 
     -- ---- NEUTRAL RESET: ITEM FILTER FLAGS ----
     -- Zero out ALL item filter flags inherited from the template.
@@ -450,10 +548,23 @@ local function build_reagent(rgt_def, base_reagent, mat_lookup, all_reagent_defs
         -- The type wins when both are present, so a fixed type can
         -- never be redirected by a stray tool_id in a module's JSON.
         -- Neither present means -1, which matches any tool at all.
+        -- A numeric item_subtype in the types table IS the subtype
+        -- index already, so it must not go through the code lookup.
+        -- Five entries declare one that way and each produced a
+        -- warning naming itemdef '0' through '4', with the slot left
+        -- unrestricted.
         if rtype.item_subtype then
-            r.item_subtype = resolve_tool_subtype(rtype.item_subtype)
+            if type(rtype.item_subtype) == "number" then
+                r.item_subtype = rtype.item_subtype
+            else
+                r.item_subtype =
+                    resolve_tool_subtype(rtype.item_subtype, rtype.item_type, true)
+                if r.item_subtype == -1 then unresolved = rtype.item_subtype end
+            end
         elseif rtype.needs_tool_id and rgt_def.tool_id then
-            r.item_subtype = resolve_tool_subtype(rgt_def.tool_id)
+            r.item_subtype =
+                resolve_tool_subtype(rgt_def.tool_id, rtype.item_type, true)
+            if r.item_subtype == -1 then unresolved = rgt_def.tool_id end
         else
             r.item_subtype = -1
         end
@@ -471,9 +582,45 @@ local function build_reagent(rgt_def, base_reagent, mat_lookup, all_reagent_defs
         else
             r.mat_type = rtype.mat_type or -1
 
-            -- mat_index resolution from mat_id
-            if rtype.needs_mat_id and rgt_def.mat_id then
-                r.mat_index = mat_lookup[rgt_def.mat_id] or -1
+            -- ---- mat_index resolution from mat_id ----
+            -- mat_id present on the definition = the author wants a
+            -- gate, REGARDLESS of the type's needs_mat_id flag. The
+            -- old form had two silent failure modes, both proven in
+            -- the field on the night the peat reaction grabbed the
+            -- rot key:
+            --   TOOL discarded mat_id outright (needs_mat_id false),
+            --   which is how the wet and dried fines split never
+            --   actually gated anything.
+            --   A lookup miss fell to -1, the WILDCARD, so a gate
+            --   that failed to resolve matched EVERY material. The
+            --   lookup is built before module materials inject, so
+            --   every module-owned mat_id missed it.
+            -- The rescan below repairs the timing: on a miss, walk
+            -- the live inorganic array once more, because by
+            -- reaction-build time the module's materials are in RAM
+            -- even though the cached lookup predates them. A miss
+            -- AFTER rescan is a real authoring error and is logged
+            -- loudly, never swallowed.
+            if rgt_def.mat_id then
+                local idx = mat_lookup[rgt_def.mat_id]
+                if idx == nil then
+                    for i, mat in ipairs(df.global.world.raws.inorganics.all) do
+                        mat_lookup[mat.id] = i
+                    end
+                    idx = mat_lookup[rgt_def.mat_id]
+                end
+                if idx ~= nil then
+                    -- A resolved gate must also pin the TYPE, or a
+                    -- type of -1 (TOOL's default) leaves the index
+                    -- meaningless and the gate open anyway.
+                    r.mat_type  = 0
+                    r.mat_index = idx
+                else
+                    r.mat_index = -1
+                    -- WARNING: the reaction runs, but this slot takes any material.
+                    log('WARNING', 'mat_id [' .. tostring(rgt_def.mat_id)
+                        .. '] did not resolve; reagent ships UNGATED.', 'REAGENT')
+                end
             elseif rtype.mat_index ~= nil then
                 r.mat_index = rtype.mat_index
             else
@@ -488,8 +635,36 @@ local function build_reagent(rgt_def, base_reagent, mat_lookup, all_reagent_defs
         -- boulder reagent from BRASS_MAKING with metal_ore pointing
         -- at zinc, and we're building a BAR reagent for copper,
         -- the leftover metal_ore would confuse DF).
+        --
+        -- ---- AND A MISS IS ANNOUNCED HERE TOO ----
+        -- `or -1` was the last silent fallback in this function. -1 on
+        -- metal_ore is no ore requirement at all, so an ORE_OF reagent
+        -- whose metal_id was mistyped did not ask for ore of that
+        -- metal, it accepted any boulder the rest of the filter let
+        -- through.
+        --
+        -- Same shape as mat_id and tool_id, which both report, and as
+        -- has_tool_use, which now does. It still ends at -1 because
+        -- there is no other value to use; the line is what makes it
+        -- visible.
+        --
+        -- No offline check for this one: metal_id resolves against the
+        -- inorganic table, which preflight cannot see without the
+        -- game's raws, the same reason a bad mat_id is only caught at
+        -- injection.
         if rtype.needs_metal_id and rgt_def.metal_id then
-            r.metal_ore = mat_lookup[rgt_def.metal_id] or -1
+            local ore = mat_lookup[rgt_def.metal_id]
+            if ore ~= nil then
+                r.metal_ore = ore
+            else
+                r.metal_ore = -1
+                log('WARNING', string.format(
+                    'metal_id %s did not'
+                    .. ' resolve. metal_ore is -1, which is NO ore'
+                    .. ' requirement, so this reagent takes any'
+                    .. ' boulder the rest of its filter allows.',
+                    tostring(rgt_def.metal_id)), 'REAGENT')
+            end
         else
             r.metal_ore = -1
         end
@@ -501,14 +676,124 @@ local function build_reagent(rgt_def, base_reagent, mat_lookup, all_reagent_defs
             r.reaction_class = rtype.reaction_class or ""
         end
 
-        -- has_tool_use: use definition override (resolved from string), 
-        -- else type default, else wildcard (-1)
+        -- ---- mat_token: ANY MATERIAL, BY FULL TOKEN ----
+        -- mat_id names an inorganic only. mat_token names any material
+        -- dfhack.matinfo.find can read, a plant's above all:
+        --   "mat_token": "PLANT_MAT:ACACIA:WOOD"
+        -- which is exactly what a vanilla log reagent names
+        -- ([REAGENT:log:1:WOOD:NONE:PLANT_MAT:ACACIA:WOOD],
+        -- reaction_dyes.txt). Products have taken mat_token for a while;
+        -- this is the reagent half.
+        --
+        -- Resolved here, at build time, when every module material and
+        -- plant host is already in RAM, the moment products resolve
+        -- theirs. It runs after the type defaults, mat_id and
+        -- reaction_class above, so it wins: a token names both halves of
+        -- the pair and pins them together, since an index without its
+        -- type means nothing. Declaring both mat_token and mat_id is an
+        -- authoring slip, reported, with the token winning, the same
+        -- rule products follow.
+        --
+        -- ---- A MISS CLOSES THE GATE ----
+        -- A token that does not resolve must not fall to -1, the
+        -- wildcard: a slot meant for one tree's logs would then take
+        -- every log in the fort and make that tree's product from them.
+        -- Instead the slot is given a reaction class no material
+        -- carries, so it matches nothing, the reaction shows and cannot
+        -- run, and the log names the token. (mat_id's miss still ships
+        -- ungated with a warning; that older rule is left as it was.)
+        if rgt_def.mat_token then
+            if rgt_def.mat_id then
+                log('WARNING', string.format(
+                    "reagent declares both mat_token '%s' and mat_id '%s'; the token wins.",
+                    tostring(rgt_def.mat_token), tostring(rgt_def.mat_id)), 'REAGENT')
+            end
+            local info = nil
+            pcall(function() info = dfhack.matinfo.find(rgt_def.mat_token) end)
+            if info then
+                r.mat_type  = info.type
+                r.mat_index = info.index
+            else
+                r.reaction_class = UNRESOLVED_TOKEN_CLASS
+                log('ERROR', string.format(
+                    "reagent mat_token '%s' did not resolve; the slot is CLOSED"
+                    .. " (reaction class %s), so the reaction shows and cannot run.",
+                    tostring(rgt_def.mat_token), UNRESOLVED_TOKEN_CLASS), 'REAGENT')
+            end
+        end
+
+        -- has_tool_use: definition override resolved from a string,
+        -- else the type default, else wildcard (-1).
+        --
+        -- ---- A MISS IS ANNOUNCED, NOT SWALLOWED ----
+        -- This used to read `df.tool_uses[name] or -1`, and -1 is the
+        -- WILDCARD. So a mistyped tool use did not narrow the filter,
+        -- it opened it completely, and nothing anywhere said so:
+        -- preflight does not validate this field either.
+        --
+        -- Same disease the mat_id path was cured of, and the exact
+        -- opposite of what vector_id does two blocks down. It still
+        -- ends at the type default or -1 because there is no third
+        -- value to fall to, but it now says which reagent and which
+        -- name, so a wide open filter is a line in the log rather than
+        -- a mystery in the fort.
+        --
+        -- Zero is a legal tool use, LIQUID_COOKING, and zero is truthy
+        -- in Lua, so the nil test has to be explicit.
         if rgt_def.has_tool_use then
-            r.has_tool_use = df.tool_uses[rgt_def.has_tool_use] or -1
+            local tu = df.tool_uses[rgt_def.has_tool_use]
+            if tu ~= nil then
+                r.has_tool_use = tu
+            else
+                r.has_tool_use = (rtype.has_tool_use ~= nil)
+                    and rtype.has_tool_use or -1
+                log('WARNING', string.format(
+                    'has_tool_use %s is not a'
+                    .. ' df.tool_uses value. The reagent falls back'
+                    .. ' to %s, and -1 is the WILDCARD, so this'
+                    .. ' filter is wider than intended.',
+                    tostring(rgt_def.has_tool_use),
+                    tostring(r.has_tool_use)), 'REAGENT')
+            end
         elseif rtype.has_tool_use ~= nil then
             r.has_tool_use = rtype.has_tool_use
         else
             r.has_tool_use = -1
+        end
+    end
+
+    -- ---- VECTOR ----
+    -- DF keeps 136 separate item vectors and this field says which one
+    -- the filter searches. It reaches gates nothing else in the schema
+    -- can express: ANY_DEAD_DWARF is every corpse a butcher refuses,
+    -- citizens, pets and sapient invaders alike, and ANY_MURDERED,
+    -- ANY_CAN_ROT and ANY_MELT_DESIGNATED are the same kind of thing.
+    --
+    -- Resolved against the LIVE enum, never against the list in
+    -- types.JOB_ITEM_VECTORS. That list is only there so preflight can
+    -- catch a typo offline; if DF adds a vector the engine still finds
+    -- it.
+    --
+    -- A MISS LEAVES THE FIELD ALONE and says so at volume. It does not
+    -- fall to 0, which is ANY, and it does not fall to -1. Compare
+    -- has_tool_use immediately above, which does fall to -1 on an
+    -- unknown string: that is the wildcard, so a typo there silently
+    -- opens the filter instead of narrowing it. Same disease the
+    -- mat_id path was cured of, and worth curing there too.
+    --
+    -- Omitting vector_id leaves whatever the structural donor carried,
+    -- which is DF's own default for the item type. This is opt in.
+    if rgt_def.vector_id ~= nil then
+        local vid = nil
+        pcall(function() vid = df.job_item_vector_id[rgt_def.vector_id] end)
+        if vid ~= nil then
+            r.vector_id = vid
+        else
+            log('WARNING', string.format(
+                'vector_id %s is not a'
+                .. ' df.job_item_vector_id value. The reagent keeps its'
+                .. ' default vector and searches wider than intended.',
+                tostring(rgt_def.vector_id)), 'REAGENT')
         end
     end
 
@@ -685,10 +970,18 @@ local function build_reagent(rgt_def, base_reagent, mat_lookup, all_reagent_defs
     -- flags1 exclusions. Same story as the categories above: job item
     -- filter bits with no raw token, so no raw file can set them.
     --
-    --   not_bin → item is not a bin. The furniture category includes
-    --             containers, and a furniture reagent will happily take
-    --             a barrel off the stockpile floor. Confirmed live: the
-    --             first CHAR_FURNITURE job grabbed a barrel.
+    --   not_bin → UNRESOLVED semantics, two live measurements that
+    --             disagree. On the furniture wildcard (item_type
+    --             ANY + flags): a FILLED chest reds the menu with
+    --             this set and burns with it removed, consistent
+    --             with a container=false test plus no-bins. On the
+    --             TYPED reagents (ASH_BOX etc): the SAME filled
+    --             chest, SAME flag, gets fetched and consumed.
+    --             DF applies this bit differently by reagent shape,
+    --             mechanism unmeasured. Consequence that matters:
+    --             this flag is NOT reliable cargo protection. The
+    --             cargo watcher is the protection; this bit is at
+    --             most a menu courtesy on wildcards.
     --
     --   solid   → item is in a solid state. Worth pairing with any
     --             item_type -1 reagent to keep liquids and powders out
@@ -725,7 +1018,7 @@ local function build_reagent(rgt_def, base_reagent, mat_lookup, all_reagent_defs
         end
     end
 
-    return r
+    return r, unresolved
 end
 
 -- ==========================================
@@ -805,12 +1098,10 @@ local function build_improvement_product(prod_def, donor)
 
     local itype = df.improvement_type[type_name]
     if type(itype) ~= "number" then
-        local msg = string.format(
-            "MODULE REACT WARNING: unknown improvement_type '%s'. product skipped.",
-            tostring(prod_def.improvement_type))
-        if _G.refinish_log_event then
-            _G.refinish_log_event(msg)
-        end
+        -- ERROR: the reaction runs without this product, which the player will meet in play.
+        log('ERROR', string.format(
+            "unknown improvement_type '%s'. product skipped.",
+            tostring(prod_def.improvement_type)), 'PRODUCT')
         return nil
     end
     p.improvement_type          = itype
@@ -913,10 +1204,9 @@ local function build_product(prod_def, base_product, mat_lookup)
         if type(resolved) == "number" then
             p.item_type = resolved
         else
-            if _G.refinish_log_event then
-                _G.refinish_log_event(string.format("MODULE REACT WARNING: unknown product type '%s'. product skipped.",
-                tostring(prod_def.type)))
-            end
+            -- ERROR: the reaction runs without this product, which the player will meet in play.
+            log('ERROR', string.format("unknown product type '%s'. product skipped.",
+            tostring(prod_def.type)), 'PRODUCT')
             return nil
         end
     end
@@ -927,6 +1217,15 @@ local function build_product(prod_def, base_product, mat_lookup)
         p.flags.CRAFTS = true
     end
 
+    -- PASTE is the same story: cleared by the neutral reset, set back
+    -- on when the schema asks for it. Vanilla marks paper slurry as a
+    -- paste (PRODUCT_PASTE on MAKE_SLURRY_FROM_PLANT), so the pulp
+    -- globs carry it to match. If the press turns out not to read the
+    -- flag, it is inert and costs nothing.
+    if prod_def.paste then
+        p.flags.PASTE = true
+    end
+
     -- ---- ITEM SUBTYPE ----
     -- Default -1, because template donors carry specific subtypes
     -- (an instrument subtype, say) that would contaminate the product.
@@ -934,7 +1233,16 @@ local function build_product(prod_def, base_product, mat_lookup)
     -- since those indices shift with mod load order.
     p.item_subtype = -1
     if prod_def.subtype then
-        p.item_subtype = resolve_item_subtype(p.item_type, prod_def.subtype)
+        p.item_subtype = resolve_item_subtype(p.item_type, prod_def.subtype, true)
+        -- Named and not injected: a product of subtype -1 is not the
+        -- thing the reaction promises, so it is skipped and named, and a
+        -- reaction left with nothing to make is left out (NOTHING LEFT
+        -- TO MAKE).
+        if p.item_subtype == -1 and ITEMDEF_LISTS[p.item_type] then
+            log('ERROR', string.format("product subtype '%s' is not injected;"
+                .. " product skipped.", tostring(prod_def.subtype)), 'ITEMDEF')
+            return nil
+        end
     end
 
     -- Count and dimension
@@ -942,9 +1250,65 @@ local function build_product(prod_def, base_product, mat_lookup)
     p.product_dimension = prod_def.dimension or 150
     p.probability = prod_def.probability or 100
 
-    -- Material resolution: exactly one of three modes
+    -- Material resolution: exactly one of FOUR modes
+    --
+    -- Mode 0: a full material TOKEN, resolved live at build time.
+    --
+    -- WHY THIS EXISTS. Every other mode resolves a material through a
+    -- static table, and a PLANT material cannot be expressed that
+    -- way: its mat_type is 419 plus the host plant's own index, which
+    -- is not knowable until the host is injected. So a product that
+    -- wants one names the whole token and this resolves it against
+    -- the live raws.
+    --
+    -- ORDER MAKES IT SAFE. The engine injects plants before materials
+    -- and reactions, so any host a module ships is already in
+    -- world.raws.plants.all by the time products build. A token that
+    -- does not resolve fails LOUD and skips the product, rather than
+    -- falling through to a wildcard that would silently grab the
+    -- wrong material.
+    --
+    -- MEASURED, not assumed: a reaction product carrying a plant
+    -- material produces correctly. One live product slot was pointed
+    -- at PLANT_MAT:MAKING_FUEL_COAL_HOST:CHARCOAL and the job dropped
+    -- the bar. reaction_product_itemst::produce handles mat_type 419
+    -- and above exactly as it handles an inorganic.
+    --
+    --   { "type": "BAR", "count": 1, "dimension": 150,
+    --     "mat_token": "PLANT_MAT:MAKING_FUEL_COAL_HOST:CINDER" }
+    --
+    -- Takes precedence over mat_id, and a product declaring both is a
+    -- contradiction: the token is used and the mat_id is named in the
+    -- log so the schema gets fixed rather than quietly half read.
+    if prod_def.mat_token then
+        if prod_def.mat_id then
+            log('WARNING', string.format(
+                "product declares both mat_token '%s'"
+                .. " and mat_id '%s'. The token wins; remove the mat_id.",
+                tostring(prod_def.mat_token), tostring(prod_def.mat_id)), 'PRODUCT')
+        end
+
+        local mi = nil
+        pcall(function() mi = dfhack.matinfo.find(prod_def.mat_token) end)
+        if not mi then
+            -- ERROR: the reaction runs without this product, which the player will meet in play.
+            log('ERROR', string.format(
+                "product mat_token '%s' does not"
+                .. " resolve. If it names a plant host, the host must be"
+                .. " injected before reactions build. product skipped.",
+                tostring(prod_def.mat_token)), 'PRODUCT')
+            return nil
+        end
+
+        p.mat_type  = mi.type
+        p.mat_index = mi.index
+        p.flags.GET_MATERIAL_SAME = false
+        p.flags.GET_MATERIAL_PRODUCT = false
+        p.get_material.reagent_code = ""
+        p.get_material.product_code = ""
+
     -- Mode 1: Direct mat_id -> resolved inorganic index
-    if prod_def.mat_id then
+    elseif prod_def.mat_id then
         p.mat_type = (ptype and ptype.mat_type) or 0  -- default INORGANIC
         -- A product type with mat_subtypes carries a builtin material
         -- whose index selects WHICH form of it. COAL is the only one so
@@ -961,12 +1325,11 @@ local function build_product(prod_def, base_product, mat_lookup)
                 local names = {}
                 for k in pairs(ptype.mat_subtypes) do names[#names + 1] = k end
                 table.sort(names)
-                if _G.refinish_log_event then
-                    _G.refinish_log_event(string.format(
-                        "MODULE REACT WARNING: product type '%s' has no mat_subtype '%s'. expected one of: %s. product skipped.",
-                        tostring(prod_def.type), tostring(prod_def.mat_id),
-                        table.concat(names, ", ")))
-                end
+                -- ERROR: the reaction runs without this product, which the player will meet in play.
+                log('ERROR', string.format(
+                    "product type '%s' has no mat_subtype '%s'. expected one of: %s. product skipped.",
+                    tostring(prod_def.type), tostring(prod_def.mat_id),
+                    table.concat(names, ", ")), 'PRODUCT')
                 return nil
             end
             p.mat_index = sub
@@ -975,8 +1338,56 @@ local function build_product(prod_def, base_product, mat_lookup)
         -- -1 rather than leaning on the lookup missing.
         elseif ptype and ptype.builtin then
             p.mat_index = -1
+
+        -- ---- A BUILTIN MATERIAL NAMED BY ITS NAME ----
+        -- A product type whose material class is a builtin one (LIQUID_MISC
+        -- is builtin WATER, mat_type 6) and a mat_id that names that same
+        -- builtin: the builtin itself, index -1, no inorganic lookup. This
+        -- is Making Concrete's FILL_WATER_BARREL, whose water was always
+        -- right but was reported as "did not resolve" on every cycle,
+        -- because WATER was looked up as an inorganic and missed. A
+        -- builtin name that does NOT match the product's builtin is an
+        -- authoring error: that product is skipped and named, not shipped
+        -- as the wrong liquid.
+        elseif ptype and (ptype.mat_type or 0) > 0
+               and df.builtin_mats[prod_def.mat_id] ~= nil then
+            if df.builtin_mats[prod_def.mat_id] ~= ptype.mat_type then
+                -- ERROR: the reaction runs without this product.
+                log('ERROR', string.format(
+                    "product type '%s' is builtin %s, but mat_id names %s. product skipped.",
+                    tostring(prod_def.type), tostring(df.builtin_mats[ptype.mat_type]),
+                    tostring(prod_def.mat_id)), 'PRODUCT')
+                return nil
+            end
+            p.mat_index = -1
         else
-            p.mat_index = mat_lookup[prod_def.mat_id] or -1
+            -- Same disease the REAGENT side was cured of, found the
+            -- hard way on the PRODUCT side: a lookup miss fell to
+            -- -1, and a -1 product resolves to DF's builtin
+            -- fallback. Scar refinement: for a BOULDER that
+            -- fallback produced MAGMA, live, from press cork. The
+            -- cure is the same cure: module materials inject after
+            -- the lookup is built, so a miss rescans the live
+            -- inorganic array once, and only a post-rescan miss is
+            -- a real authoring error, logged loudly, never -1.
+            local idx = mat_lookup[prod_def.mat_id]
+            if idx == nil then
+                for i, mat in ipairs(df.global.world.raws.inorganics.all) do
+                    mat_lookup[mat.id] = i
+                end
+                idx = mat_lookup[prod_def.mat_id]
+            end
+            if idx == nil then
+                -- ERROR: the reaction runs without this product. It used to
+                -- ship with index -1, which DF turns into whatever builtin
+                -- it likes (magma, for a boulder): the wrong thing made
+                -- silently. A product that cannot be made right is not made.
+                log('ERROR', 'PRODUCT mat_id ['
+                    .. tostring(prod_def.mat_id)
+                    .. '] did not resolve; product skipped.', 'PRODUCT')
+                return nil
+            end
+            p.mat_index = idx
         end
         p.flags.GET_MATERIAL_SAME = false
         p.flags.GET_MATERIAL_PRODUCT = false
@@ -1044,22 +1455,83 @@ local custom_workshop_cache = nil
 local function resolve_custom_workshop(code)
     -- JIT GATE: Build dictionary exactly once
     if not custom_workshop_cache then
-        local ok, shops = pcall(function() return df.global.world.raws.buildings.workshops end)
-        if not ok or not shops then return nil end
-        
+        -- BOTH custom building vectors. A FURNACE class definition
+        -- registers in buildings.furnaces and never appears in
+        -- buildings.workshops, so a workshops-only walk reports
+        -- every furnace reaction's building as missing and leaves
+        -- the template's building in place. The vectors share an
+        -- id space, so one flat code -> id map covers both.
+        local ok, raws = pcall(function() return df.global.world.raws.buildings end)
+        if not ok or not raws then return nil end
+
         custom_workshop_cache = {}
-        for i, ws in ipairs(shops) do
-            local got, id = pcall(function() return ws.id end)
-            if got and type(id) == "number" then 
-                custom_workshop_cache[ws.code] = id 
-            else
-                custom_workshop_cache[ws.code] = i
+        for _, vec in ipairs({ raws.workshops, raws.furnaces }) do
+            for i, ws in ipairs(vec) do
+                local got, id = pcall(function() return ws.id end)
+                if got and type(id) == "number" then
+                    custom_workshop_cache[ws.code] = id
+                else
+                    custom_workshop_cache[ws.code] = i
+                end
             end
         end
     end
     
     -- O(1) Instant Lookup
     return custom_workshop_cache[code]
+end
+
+-- ==========================================
+-- WHEN A MOD CUTS MAKE DYE
+-- ==========================================
+-- A reaction names its category by id, and DF files it under the
+-- category of that id, or under none if the world has no such category:
+-- the reaction is then in no menu at all. SEEN 2026-10-04: a mod cut
+-- vanilla's Make dye, filing its dyes under categories of its own, and
+-- every module dye (Making Fuel's, RM's mineral dyes) was gone from the
+-- dyer.
+--
+-- So when MAKE_DYE is cut, RM makes a Make dye of its own,
+-- REFINISH_CORE_CAT_MAKE_DYE, as vanilla's is (its name and description,
+-- no hotkey), and files the module dyes there. Nothing guesses which of a
+-- mod's categories is the dye one: a mod can split its dyes across
+-- several, ordinary and bulk. Swept with RM core's other assets before
+-- every save and made again when next needed; said once a session, at
+-- INFO. Every other category is kept as named. A module category whose
+-- parent is MAKE_DYE (RM's Make mineral dye, refinish-dyes.lua) has its
+-- parent resolved the same way in inject_categories, so it never hangs
+-- from a category the world lacks (2026-10-04).
+-- ==========================================
+local DYE_CATEGORY = 'MAKE_DYE'
+local DYE_OWN      = 'REFINISH_CORE_CAT_MAKE_DYE'
+local dye_said     = false
+
+local function category_exists(id)
+    for _, c in ipairs(df.global.world.raws.reactions.reaction_categories) do
+        if c.id == id then return true end
+    end
+    return false
+end
+
+local function resolve_category(id)
+    if id == nil or id == '' then return '' end
+    if id ~= DYE_CATEGORY or category_exists(id) then return id end
+    if not category_exists(DYE_OWN) then
+        local c = df.reaction_category:new()
+        c.id          = DYE_OWN
+        c.name        = 'Make dye'
+        c.parent      = ''
+        c.description = "Make dyes from plants, minerals and other materials that don't require a mill."
+        c.key         = 0
+        df.global.world.raws.reactions.reaction_categories:insert('#', c)
+        if not dye_said then
+            dye_said = true
+            -- INFO: where the module dyes are, which a player might look for.
+            log('INFO', 'This world has no Make dye category (a mod cut it), so RM made its'
+                .. ' own, and the module dyes are there.', 'CATEGORY')
+        end
+    end
+    return DYE_OWN
 end
 
 -- ==========================================
@@ -1080,12 +1552,169 @@ end
 local function disable_fortress_mode(rxn) rxn.flags.FORTRESS_MODE_ENABLED = false end
 local function set_fortress_mode(rxn, val) rxn.flags.FORTRESS_MODE_ENABLED = val end
 
+-- ==========================================
+-- READS: WHAT A REAGENT SAYS (2026-10-05)
+-- ==========================================
+-- DF builds a reaction's requirement text, in the hover and in a red
+-- row's objection alike, from each reagent's own fields: a class gated
+-- reagent prints its class token ("4 FINE_COAL bars", "BINDER binder"),
+-- and the container of a contained reagent prints that reagent's code
+-- ("Tar-containing item"). A reagent may declare reads, the words a
+-- player should see there, and each of DF's levers takes them:
+--   * A CONTAINED reagent's code becomes the words, and every product
+--     naming that code (the material it takes, the container it fills,
+--     an improvement's target) follows it. Measured first on the tank's
+--     fill clones (making-fuel-tank-fuel.lua, set_fill_mode): DF printed
+--     "Light liquid fuel-containing item". Containment is by position
+--     (build_reagent), so two vessels of one liquid may read alike.
+--   * A CLASS GATED reagent's class becomes the words, and every material
+--     carrying the old class is given the words beside it, so the reagent
+--     matches exactly what it did (refinish-material-classes.lua,
+--     ALIASES). Measured 2026-10-05 with making-fuel-reads-probe: the
+--     hover read "4 fine coal bars" and "Clay or glue binder", a red
+--     row's objection read the words, and the row went white with
+--     cinders and a binder in the fort.
+--   * A PRODUCT GATED reagent with no class (has_material_reaction_product)
+--     prints the product id ("SEED_MAT-producing plant"). Its gate becomes
+--     the words, as a class: every material having the product is given the
+--     words at start (refinish-material-classes.lua, ALIASES), and the
+--     reagent asks for the words in place of the product, so it takes
+--     exactly what it took and DF prints "seed-bearing plant". A reagent
+--     with a class as well keeps its product gate: a reagent holds one class.
+-- DF writes the words as given, capitalised where a line starts with
+-- them, and adds its own item word after a class ("bars", "binder"), so
+-- the words are the part before it. A reagent with neither lever (a
+-- material named by mat_id, a tool by tool_id alone) already reads its
+-- material or tool name, and its reads changes nothing.
+-- ONE SET OF WORDS STANDS FOR ONE CLASS. A reagent asking for the words
+-- matches every material carrying them, so words already standing for
+-- another class are refused, said in the log, and the reagent keeps its
+-- own class and code.
+-- ==========================================
+
+-- [old class][words] = owner: every alias asked for this cycle, read by
+-- the class service at its start (ALIASES there) and emptied by its stop,
+-- so each injection asks afresh.
+_G.refinish_class_aliases = _G.refinish_class_aliases or {}
+
+-- A product gate's entry in that table: PRODUCT_KEY and the product id, so
+-- one table and one set of words serve classes and products alike.
+-- refinish-material-classes.lua reads the same prefix.
+local PRODUCT_KEY = '@product:'
+
+-- The class a set of words already stands for this cycle, or nil.
+local function alias_class_of(words)
+    for old, by in pairs(_G.refinish_class_aliases) do
+        if by[words] then return old end
+    end
+    return nil
+end
+
+-- Said once a session when the class service is missing (below).
+local reads_warned = false
+
+-- Called once the reaction's reagents and products are built, before it
+-- is injected. Reagent i of the definition is reagent i - 1 of the
+-- reaction: the builder inserts them in order (STEP 8).
+local function apply_reads(rxn, def, owner)
+    local reads, contained = {}, {}
+    for _, rd in ipairs(def.reagents or {}) do
+        if type(rd.reads) == 'string' and rd.reads ~= '' then reads[rd.code] = rd.reads end
+        if rd.contains then contained[rd.contains] = true end
+    end
+    if next(reads) == nil then return end
+    if #rxn.reagents ~= #(def.reagents or {}) then return end
+    local renamed = {}
+    for i, rd in ipairs(def.reagents) do
+        local words = reads[rd.code]
+        local r = nil
+        if words then pcall(function() r = rxn.reagents[i - 1] end) end
+        if r then
+            local cls = ''
+            pcall(function() cls = tostring(r.reaction_class) end)
+            local classed = cls ~= '' and cls ~= UNRESOLVED_TOKEN_CLASS
+            -- No class but a product gate: the gate becomes the words
+            -- (PRODUCT GATED, above). key is what the words stand for.
+            local product = ''
+            if not classed then
+                pcall(function() product = tostring(r.has_material_reaction_product) end)
+            end
+            local key = nil
+            if classed then
+                key = cls
+            elseif product ~= '' then
+                key = PRODUCT_KEY .. product
+            end
+            local ok = true
+            if key and not _G.refinish_class_grants then
+                -- Without RM's class service no material would ever carry the
+                -- words, and the reagent would match nothing: it keeps its
+                -- class or product, and only its code (below) takes the words.
+                -- refinish-material-classes.lua publishes its record at load.
+                key = nil
+                if not reads_warned then
+                    reads_warned = true
+                    -- WARNING: gated reagents read their tokens.
+                    log('WARNING', 'refinish-material-classes is not loaded, so reagents'
+                        .. ' gated by a class or a product keep their tokens; a'
+                        .. ' contained reagent still reads its words.', 'READS')
+                end
+            end
+            if key then
+                local held = alias_class_of(words)
+                if held and held ~= key then
+                    ok = false
+                    -- ERROR: this reagent keeps reading its token.
+                    log('ERROR', string.format("[%s] reagent '%s' reads \"%s\", which already"
+                        .. " stands for %s; it keeps its own %s and code.",
+                        tostring(def.key), tostring(rd.code), words, held, key), 'READS')
+                else
+                    local by = _G.refinish_class_aliases[key] or {}
+                    by[words] = owner
+                    _G.refinish_class_aliases[key] = by
+                    r.reaction_class = words
+                    if not classed then r.has_material_reaction_product = '' end
+                end
+            end
+            if ok and contained[rd.code] then
+                r.code = words
+                renamed[rd.code] = words
+            end
+        end
+    end
+    if next(renamed) == nil then return end
+    -- Every product naming a renamed code follows it, as set_fill_mode's
+    -- clones do. Each field under its own pcall: an item product has no
+    -- target_reagent, an improvement no product_to_container.
+    for _, p in ipairs(rxn.products) do
+        pcall(function()
+            local c = tostring(p.get_material.reagent_code)
+            if renamed[c] then p.get_material.reagent_code = renamed[c] end
+        end)
+        pcall(function()
+            local c = tostring(p.product_to_container)
+            if renamed[c] then p.product_to_container = renamed[c] end
+        end)
+        pcall(function()
+            local c = tostring(p.target_reagent)
+            if renamed[c] then p.target_reagent = renamed[c] end
+        end)
+    end
+end
+
 function inject_reactions(reactions_defs, prefix, mod_name, registry)
     local debug_react = false
     -- FLUSH CACHES TO PREVENT DANGLING C++ POINTERS ON RESTART
     custom_workshop_cache = nil
     itemdef_cache = {}
     
+    -- THE LOAD CLOCK (refinish-startup.lua): nil outside a pipeline run.
+    -- The template searches actually run are summed on their own (ONE
+    -- SEARCH PER SHAPE, in the loop below).
+    local LC = _G.refinish_load_clock
+    local t_rx = LC and LC.now()
+    local s_search, n_search = 0, 0
+    local searched = {}     -- ONE SEARCH PER SHAPE: shape -> { rxn, score }
     local reactions_array = df.global.world.raws.reactions.reactions
     local mat_lookup = build_mat_lookup()
     local count = 0
@@ -1093,12 +1722,26 @@ function inject_reactions(reactions_defs, prefix, mod_name, registry)
     -- Pull all C++ reactions into pure Lua signatures ONCE.
     -- This prevents 10,000,000+ C++ boundary crossings during template scoring.
     local fast_reactions_cache = { signatures = {}, by_code = {} }
+
+    -- ---- THE SIGNATURES, ONCE A RUN ----
+    -- Within one pipeline run the signatures are the same for every
+    -- module: they leave out RM's own, generated and module reactions,
+    -- and module reactions are all the run adds between one module's
+    -- call and the next. Nothing writes to a signature once made. So
+    -- the first module's are kept in the run cache (refinish-startup.lua)
+    -- and the others take them; by_code is still read whole each call,
+    -- since it does hold module reactions. Outside a run, built as before.
+    -- MEASURED 2026-10-01 (the load clock, region4): three builds a load,
+    -- about 45 ms each with the material lookup.
+    local run_cache = _G.refinish_run_cache
+    local kept_sigs = run_cache and run_cache.react_signatures
     
     for _, rxn in ipairs(reactions_array) do
         fast_reactions_cache.by_code[rxn.code] = rxn
         
-        -- Skip RM core reactions and procedural junk so we don't even cache them
-        if not has_prefix(rxn.code, "REFINISH_STEEL_") and not rxn.flags.GENERATED then
+        -- Skip RM core reactions and procedural junk so we don't even cache them,
+        -- and every reaction once this run's signatures are kept.
+        if not kept_sigs and not has_prefix(rxn.code, "REFINISH_STEEL_") and not rxn.flags.GENERATED then
             
             local is_module = false
             if registry then
@@ -1142,30 +1785,63 @@ function inject_reactions(reactions_defs, prefix, mod_name, registry)
             end
         end
     end
+    if kept_sigs then
+        fast_reactions_cache.signatures = kept_sigs
+    elseif run_cache then
+        run_cache.react_signatures = fast_reactions_cache.signatures
+    end
 
+    if LC then
+        t_rx = LC.lap('reactions (module): material lookup, template signatures', t_rx, prefix)
+    end
     for _, def in ipairs(reactions_defs) do
         local full_id = prefix .. "RXN_" .. def.key
 
         -- ---- STEP 1: FIND TEMPLATE ----
         -- Pass the fast cache in to bypass the C++ boundary
-        local template, template_score = find_template(def, fast_reactions_cache)
-        if not template then
-            if _G.refinish_log_event then
-                _G.refinish_log_event(string.format(
-                    "MODULE REACT WARNING: No template could be found for [%s].", full_id
-                ))
+        -- ---- ONE SEARCH PER SHAPE ----
+        -- MEASURED 2026-10-01, the load clock, region4: Making Fuel's 633
+        -- reactions each scored all 2,720 template signatures, 2,118 ms,
+        -- and they came in 42 shapes. score_template reads four fields of
+        -- a definition (building, fuel, reagent count, first product's
+        -- type), so definitions of one shape score every signature the
+        -- same and get the same template, the first best in signature
+        -- order, which is what find_template returns. The first of each
+        -- shape searches and the rest take its answer. Kept only with
+        -- signatures to search: with none, find_template falls back on
+        -- the definition's own fallback_template, which no shape holds.
+        local first = def.products and def.products[1]
+        local shape = tostring(def.building) .. '|' .. tostring(def.fuel or false)
+            .. '|' .. tostring(def.reagents and #def.reagents or '-')
+            .. '|' .. tostring(first and first.type or '-')
+        local template, template_score
+        local found = searched[shape]
+        if found then
+            template, template_score = found.rxn, found.score
+        else
+            local t_s = LC and LC.now()
+            template, template_score = find_template(def, fast_reactions_cache)
+            if LC then s_search, n_search = s_search + (LC.now() - t_s), n_search + 1 end
+            if #fast_reactions_cache.signatures > 0 then
+                searched[shape] = { rxn = template, score = template_score }
             end
+        end
+        if not template then
+            -- ERROR: this reaction is not built, which the player will meet in play.
+            log('ERROR', string.format(
+                "No template could be found for [%s].", full_id
+            ), 'TEMPLATE')
             goto continue
         end
 
         -- Log the template selection so the modder can verify
         -- the engine picked a sensible structural donor
-        if _G.refinish_log_event and debug_react then
-            _G.refinish_log_event(string.format(
-                "MODULE REACT: [%s] -> template [%s] (score %d, building %s, skill %s).",
+        if debug_react then
+            log('DETAIL', string.format(
+                "[%s] -> template [%s] (score %d, building %s, skill %s).",
                 full_id, template.code, template_score,
                 def.building or "nil", def.skill or "inherited"
-            ))
+            ), 'TEMPLATE')
         end
 
         -- ---- STEP 2: DEEP COPY TEMPLATE ----
@@ -1214,8 +1890,35 @@ function inject_reactions(reactions_defs, prefix, mod_name, registry)
         rxn.code = full_id
         rxn.name = def.name
 
+        -- ---- STEP 3c: DESCRIPTIONS ----
+        -- DF renders reaction.descriptions in the task pane, under
+        -- its own Produces/Requires block, following the highlight
+        -- natively. Proven live: struct is reaction_description with
+        -- a text field, built with the same new-and-insert idiom the
+        -- reaction classes use. The neutral reset above already
+        -- wiped the template's vector, so what lands here is only
+        -- what the schema says.
+        --
+        -- "description" on a reaction is optional: a string is one
+        -- entry, an array is one entry per element for authors who
+        -- want paragraphs. Ghost clones deep-copy the base, so
+        -- swapped jobs keep their prose without a line of support.
+        if def.description then
+            local entries = def.description
+            if type(entries) ~= "table" then entries = { entries } end
+            for _, line in ipairs(entries) do
+                if type(line) == "string" and line ~= "" then
+                    local d = df.reaction_description:new()
+                    d.text = line
+                    rxn.descriptions:insert('#', d)
+                end
+            end
+        end
+
         -- ---- STEP 4: CATEGORY ----
-        rxn.category = def.category or ""
+        -- Resolved, so a cut Make dye never leaves a dye in no menu
+        -- (WHEN A MOD CUTS MAKE DYE).
+        rxn.category = resolve_category(def.category or "")
 
         -- ---- STEP 5: FUEL ----
         rxn.flags.FUEL = def.fuel or false
@@ -1243,10 +1946,8 @@ function inject_reactions(reactions_defs, prefix, mod_name, registry)
                 custom_idx = resolve_custom_workshop(building_def.custom_code)
                 if not custom_idx then
                     custom_ok = false
-                    if _G.refinish_log_event then
-                        _G.refinish_log_event(string.format("MODULE REACT WARNING: [%s] needs custom workshop '%s', which is missing. Building left unchanged.",
-                        tostring(def.id), building_def.custom_code))
-                    end
+                    log('WARNING', string.format("[%s] needs custom workshop '%s', which is missing. Building left unchanged.",
+                    tostring(def.id), building_def.custom_code), 'BUILDING')
                 end
             end
 
@@ -1266,10 +1967,8 @@ function inject_reactions(reactions_defs, prefix, mod_name, registry)
                     if type(k) == "number" then
                         hotkey = k
                     else
-                        if _G.refinish_log_event then
-                            _G.refinish_log_event(string.format("MODULE REACT WARNING: [%s] has unknown building_hotkey '%s'. Ignored.",
-                                tostring(def.key), tostring(def.building_hotkey)))
-                        end
+                        log('WARNING', string.format("[%s] has unknown building_hotkey '%s'. Ignored.",
+                            tostring(def.key), tostring(def.building_hotkey)), 'HOTKEY')
                     end
                 end
 
@@ -1306,9 +2005,27 @@ function inject_reactions(reactions_defs, prefix, mod_name, registry)
 
         if base_reagent and def.reagents then
             rxn.reagents:resize(0)
+            -- ---- A TOOL THAT DOES NOT RESOLVE ----
+            -- A reagent naming a tool that is not injected used to keep
+            -- subtype -1 with a WARNING, "slot left unrestricted", which
+            -- makes it accept ANY tool: 2026-09-25, 81 of them when
+            -- Making Fuel's sawdust and bark reactions were built before
+            -- RM's forms. A reagent that cannot be made right is not
+            -- made, so the whole reaction is left out and named, and the
+            -- rest of the module builds.
+            local missing_tool = nil
             for _, rgt_def in ipairs(def.reagents) do
-                local r = build_reagent(rgt_def, base_reagent, mat_lookup, def.reagents)
+                local r, unresolved = build_reagent(rgt_def, base_reagent, mat_lookup, def.reagents)
+                if unresolved then missing_tool = unresolved end
                 rxn.reagents:insert('#', r)
+            end
+            if missing_tool then
+                -- ERROR: this reaction is missing from the game.
+                log('ERROR', string.format("Omitted: reaction '%s' names tool %s,"
+                    .. " which is not injected.", tostring(def.key),
+                    tostring(missing_tool)), 'ITEMDEF')
+                pcall(df.delete, rxn)
+                goto continue
             end
         end
 
@@ -1343,18 +2060,21 @@ function inject_reactions(reactions_defs, prefix, mod_name, registry)
             if wants_improvement then
                 improvement_donor = find_improvement_donor()
                 if not improvement_donor then
-                    if _G.refinish_log_event then
-                        _G.refinish_log_event(string.format("MODULE REACT WARNING: cannot find improvement product clone required for [%s]. reaction skipped.",
-                        tostring(def.key)))
-                    end
+                    -- ERROR: this reaction is not built, which the player
+                    -- will meet in play. The two messages here used to be
+                    -- swapped: this branch is the IMPROVEMENT donor.
+                    log('ERROR', string.format("cannot find improvement product"
+                        .. " clone required for [%s]. reaction skipped.",
+                        tostring(def.key)), 'CLONE')
                     goto continue
                 end
             end
             if wants_item and not base_product then
-                if _G.refinish_log_event then
-                        _G.refinish_log_event(string.format("MODULE REACT WARNING: cannot find item product clone required for [%s]. reaction skipped.",
-                    tostring(def.key)))
-                end
+                -- ERROR: this reaction is not built, which the player will
+                -- meet in play. This branch is the ITEM product.
+                log('ERROR', string.format("cannot find item product clone"
+                    .. " required for [%s]. reaction skipped.",
+                    tostring(def.key)), 'CLONE')
                 goto continue
             end
 
@@ -1371,7 +2091,23 @@ function inject_reactions(reactions_defs, prefix, mod_name, registry)
                     rxn.products:insert('#', p)
                 end
             end
+            -- ---- NOTHING LEFT TO MAKE ----
+            -- Every product skipped means a reaction that would eat its
+            -- reagents and make nothing, so it is left out whole, named,
+            -- and the rest of the module builds. Some products skipped
+            -- keeps the reaction, minus those, each already named above.
+            if #def.products > 0 and #rxn.products == 0 then
+                -- ERROR: this reaction is missing from the game.
+                log('ERROR', string.format("Omitted: reaction '%s', every product"
+                    .. " was skipped.", tostring(def.key)), 'PRODUCT')
+                pcall(df.delete, rxn)
+                goto continue
+            end
         end
+
+        -- ---- STEP 9.5: READS ----
+        -- What each reagent says, where it declares it (READS, above).
+        apply_reads(rxn, def, mod_name or prefix)
 
         -- ---- STEP 10: INJECT ----
         reactions_array:insert('#', rxn)
@@ -1385,11 +2121,19 @@ function inject_reactions(reactions_defs, prefix, mod_name, registry)
         ::continue::
     end
 
-    if _G.refinish_log_event then
-        _G.refinish_log_event(string.format(
-            "MODULE REACT: [%s] built %d reactions.", mod_name, count
-        ))
+    -- THE LOAD CLOCK: the build loop as a whole, the search inside it on
+    -- its own, and one line saying how many searches the reactions took.
+    if LC then
+        LC.lap('reactions (module): build loop, search included', t_rx, prefix)
+        LC.add('reactions (module): template search', s_search, n_search, prefix)
+        log('DETAIL', string.format('[%s] template search: %d search(es) for %d'
+            .. ' reaction(s), against %d signature(s), %.0f ms.', tostring(mod_name),
+            n_search, #reactions_defs, #fast_reactions_cache.signatures,
+            s_search * 1000), 'LOAD_CLOCK')
     end
+    log('DETAIL', string.format(
+        "[%s] built %d reactions.", mod_name, count
+    ), tostring(mod_name))
 
     return count
 end
@@ -1441,7 +2185,9 @@ function inject_categories(categories, prefix)
             for _, other in ipairs(categories) do
                 if other.key == cat_def.parent then declared = true break end
             end
-            parent_id = declared and prefixed or cat_def.parent
+            -- Not ours: resolved, so MAKE_DYE follows a cut Make dye
+            -- (WHEN A MOD CUTS MAKE DYE); any other parent stays as named.
+            parent_id = declared and prefixed or resolve_category(cat_def.parent)
         end
 
         -- key is the menu hotkey, an interface_key value, 0 for none.
@@ -1454,10 +2200,8 @@ function inject_categories(categories, prefix)
             if type(k) == "number" then
                 hotkey = k
             else
-                if _G.refinish_log_event then
-                        _G.refinish_log_event(string.format("MODULE REACT WARNING: [%s] has unknown hotkey '%s'. ignored.",
-                    tostring(cat_def.key), tostring(cat_def.hotkey)))
-                end
+                log('WARNING', string.format("[%s] has unknown hotkey '%s'. ignored.",
+                tostring(cat_def.key), tostring(cat_def.hotkey)), 'HOTKEY')
             end
         end
 
@@ -1509,11 +2253,9 @@ function inject_categories(categories, prefix)
     end
     for _, root in ipairs(roots) do inject_node(root) end
 
-    if _G.refinish_log_event then
-        _G.refinish_log_event(string.format(
-            "MODULE REACT: Injected %d categories.", count
-        ))
-    end
+    log('DETAIL', string.format(
+        "Injected %d categories.", count
+    ), 'CATEGORIES')
 
     return count
 end

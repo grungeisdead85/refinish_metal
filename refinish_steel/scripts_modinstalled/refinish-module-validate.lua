@@ -174,6 +174,12 @@ local function validate_material(mat, index, prefix)
         end
     end
 
+    -- Dye colour override: optional string. Only read on a dye; the
+    -- default is the material's own colour (apply_dye_color).
+    if not is_nil_or_string(mat.dye_color) then
+        return false, tag .. ".dye_color must be a string or null"
+    end
+
     -- Value: optional number
     if not is_nil_or_number(mat.value) then
         return false, tag .. ".value must be a number or null"
@@ -245,6 +251,27 @@ local function validate_material(mat, index, prefix)
         return false, tag .. ": material_class GEM requires gem_names to be set"
     end
 
+    -- Item type name overrides. The two fields have DIFFERENT
+    -- shapes, which is the trap: block_name is a {singular, plural}
+    -- pair that DF suffixes onto the material name, stone_name is
+    -- one already-plural string that REPLACES the name outright.
+    -- Passing an array to stone_name throws inside injection.
+    if mat.block_name ~= nil then
+        if not is_table(mat.block_name) or #mat.block_name ~= 2 then
+            return false, tag .. ".block_name must be an array of exactly 2 strings or null"
+        end
+        if not is_string(mat.block_name[1]) or not is_string(mat.block_name[2]) then
+            return false, tag .. ".block_name entries must be strings"
+        end
+    end
+
+    if mat.stone_name ~= nil then
+        if not is_string(mat.stone_name) then
+            return false, tag .. ".stone_name must be a single string or null"
+                .. " (unlike block_name, it is not a pair)"
+        end
+    end
+
     -- Reaction classes: optional array of strings
     if mat.reaction_classes ~= nil then
         if not is_table(mat.reaction_classes) then
@@ -253,6 +280,39 @@ local function validate_material(mat, index, prefix)
         for i, rc in ipairs(mat.reaction_classes) do
             if not is_string(rc) then
                 return false, tag .. ".reaction_classes[" .. i .. "] must be a string"
+            end
+        end
+    end
+
+    -- Graphics: optional object of slot -> donor spec. Slots are
+    -- fixed; each value is a donor token string, or a table with
+    -- donor (required string) and offset (optional number).
+    if mat.graphics ~= nil then
+        if not is_table(mat.graphics) then
+            return false, tag .. ".graphics must be a table or null"
+        end
+        local slots = { bar = true, boulder = true, wood = true,
+                        rough = true, cheese = true, texflag = true }
+        for slot, entry in pairs(mat.graphics) do
+            if not slots[slot] then
+                return false, tag .. ".graphics has unknown slot '"
+                    .. tostring(slot) .. "'"
+            end
+            if is_string(entry) then
+                -- short form, fine
+            elseif is_table(entry) then
+                if not is_string(entry.donor) then
+                    return false, tag .. ".graphics." .. slot
+                        .. ".donor must be a string"
+                end
+                if entry.offset ~= nil
+                   and type(entry.offset) ~= 'number' then
+                    return false, tag .. ".graphics." .. slot
+                        .. ".offset must be a number"
+                end
+            else
+                return false, tag .. ".graphics." .. slot
+                    .. " must be a donor string or a table"
             end
         end
     end
@@ -308,10 +368,23 @@ local function validate_reagent(rgt, index, reaction_tag)
         return false, tag .. ".type '" .. rgt.type .. "' is not a recognized reagent type"
     end
 
-    -- Types that require mat_id
+    -- reads: the words a player sees for this reagent (READS,
+    -- refinish-module-react.lua), written onto it as DF's code or class,
+    -- so a string with something in it.
+    if rgt.reads ~= nil and not is_nonempty_string(rgt.reads) then
+        return false, tag .. ".reads must be a non-empty string"
+    end
+
+    -- Types that require a material take mat_id (an inorganic) or
+    -- mat_token (any material by full token, a plant's above all). The
+    -- token is resolved at build time; here it only has to be a string.
     local rtype = types.REAGENT_TYPES[rgt.type]
-    if rtype.needs_mat_id and not is_nonempty_string(rgt.mat_id) then
-        return false, tag .. ": type '" .. rgt.type .. "' requires mat_id"
+    if rgt.mat_token ~= nil and not is_nonempty_string(rgt.mat_token) then
+        return false, tag .. ".mat_token must be a non-empty string"
+    end
+    if rtype.needs_mat_id and not is_nonempty_string(rgt.mat_id)
+       and not is_nonempty_string(rgt.mat_token) then
+        return false, tag .. ": type '" .. rgt.type .. "' requires mat_id or mat_token"
     end
 
     -- ORE_OF requires metal_id
@@ -420,16 +493,23 @@ local function validate_product(prod, index, reaction_tag)
     end
 
     -- Must have exactly one material source: mat_id, get_material_same, or get_material_product
+    -- mat_token is the fourth mode: a full material token resolved
+    -- live at build time. It exists because a PLANT material's
+    -- mat_type is 419 plus the host's own index, which no static
+    -- table can hold. Counted as a source like the other three, so a
+    -- product naming one is complete and a product naming two is
+    -- still a contradiction.
     local source_count = 0
     if prod.mat_id ~= nil then source_count = source_count + 1 end
+    if prod.mat_token ~= nil then source_count = source_count + 1 end
     if prod.get_material_same ~= nil then source_count = source_count + 1 end
     if prod.get_material_product ~= nil then source_count = source_count + 1 end
 
     if source_count == 0 then
-        return false, tag .. ": must specify exactly one of mat_id, get_material_same, or get_material_product"
+        return false, tag .. ": must specify exactly one of mat_id, mat_token, get_material_same, or get_material_product"
     end
     if source_count > 1 then
-        return false, tag .. ": only one of mat_id, get_material_same, or get_material_product allowed"
+        return false, tag .. ": only one of mat_id, mat_token, get_material_same, or get_material_product allowed"
     end
 
     -- Validate get_material_product structure if present
@@ -676,18 +756,31 @@ function validate_materials(payload)
         return false, "'materials' array is empty"
     end
 
-    -- Check for duplicate keys
-    local seen_keys = {}
+    -- ---- ONE BAD ENTRY COSTS THAT ENTRY ----
+    -- A module is refused as a whole only when it is malformed as a whole
+    -- (its identity, above, or nothing valid left). A bad material costs
+    -- that material: it is left out, and handed back to the engine as
+    -- { reason, key } so the engine can name it and drop any reaction
+    -- that needed it. A duplicate key keeps the first and drops the rest.
+    local kept, omitted, seen_keys = {}, {}, {}
     for i, mat in ipairs(payload.materials) do
         local ok, reason = validate_material(mat, i, payload.module.prefix)
-        if not ok then return false, reason end
-        if seen_keys[mat.key] then
-            return false, "materials[" .. i .. "].key '" .. mat.key .. "' is duplicated"
+        if ok and seen_keys[mat.key] then
+            ok, reason = false, "materials[" .. i .. "].key '" .. mat.key .. "' is duplicated"
         end
-        seen_keys[mat.key] = true
+        if ok then
+            seen_keys[mat.key] = true
+            kept[#kept + 1] = mat
+        else
+            omitted[#omitted + 1] = { reason = reason,
+                key = type(mat) == 'table' and is_nonempty_string(mat.key) and mat.key or nil }
+        end
     end
-
-    return true
+    if #kept == 0 then
+        return false, "no valid materials; the first: " .. tostring(omitted[1] and omitted[1].reason)
+    end
+    payload.materials = kept
+    return true, omitted
 end
 
 
@@ -710,34 +803,148 @@ function validate_reactions(payload)
         return false, "'reactions' array is empty"
     end
 
-    -- Check for duplicate keys
-    local seen_keys = {}
+    -- ---- ONE BAD ENTRY COSTS THAT ENTRY ----
+    -- As for materials: a bad reaction or category is left out and named,
+    -- and the module runs with the rest. Refused whole only for its
+    -- identity, a missing array, or nothing valid left.
+    local kept, omitted, seen_keys = {}, {}, {}
     for i, rxn in ipairs(payload.reactions) do
         local ok, reason = validate_reaction(rxn, i, payload.module.prefix)
-        if not ok then return false, reason end
-        if seen_keys[rxn.key] then
-            return false, "reactions[" .. i .. "].key '" .. rxn.key .. "' is duplicated"
+        if ok and seen_keys[rxn.key] then
+            ok, reason = false, "reactions[" .. i .. "].key '" .. rxn.key .. "' is duplicated"
         end
-        seen_keys[rxn.key] = true
+        if ok then
+            seen_keys[rxn.key] = true
+            kept[#kept + 1] = rxn
+        else
+            omitted[#omitted + 1] = { reason = reason }
+        end
     end
+    if #kept == 0 then
+        return false, "no valid reactions; the first: " .. tostring(omitted[1] and omitted[1].reason)
+    end
+    payload.reactions = kept
 
     -- Categories: optional but if present, validate each
     if payload.categories ~= nil then
         if not is_table(payload.categories) then
-            return false, "'categories' must be an array"
-        end
-        local seen_cat_keys = {}
-        for i, cat in ipairs(payload.categories) do
-            local ok, reason = validate_category(cat, i)
-            if not ok then return false, reason end
-            if seen_cat_keys[cat.key] then
-                return false, "categories[" .. i .. "].key '" .. cat.key .. "' is duplicated"
+            omitted[#omitted + 1] = { reason = "'categories' must be an array; all categories dropped" }
+            payload.categories = nil
+        else
+            local kept_cats, seen_cat_keys = {}, {}
+            for i, cat in ipairs(payload.categories) do
+                local ok, reason = validate_category(cat, i)
+                if ok and seen_cat_keys[cat.key] then
+                    ok, reason = false, "categories[" .. i .. "].key '" .. cat.key .. "' is duplicated"
+                end
+                if ok then
+                    seen_cat_keys[cat.key] = true
+                    kept_cats[#kept_cats + 1] = cat
+                else
+                    omitted[#omitted + 1] = { reason = reason }
+                end
             end
-            seen_cat_keys[cat.key] = true
+            payload.categories = kept_cats
         end
     end
 
+    return true, omitted
+end
+
+
+-- ==========================================
+-- PUBLIC: VALIDATE TOOLS
+-- ==========================================
+-- Call with the tools payload (a module's tools JSON, or a Lua module's
+-- response carrying tools). Each tool on its own, as for materials and
+-- reactions: a bad entry is left out and handed back as { reason, key },
+-- and the rest are injected. Returns false only when the tools part is
+-- unusable as a whole (no prefix, no array, nothing valid), and then the
+-- module runs without its tools rather than not at all.
+--
+-- WHY PER ENTRY MATTERS HERE MOST. The injector sorts the whole list by
+-- key before it builds anything, so one entry without a key used to
+-- throw in the sort and take every tool the module had down with it.
+--
+-- No name or version is required of a tools module block: a tools file
+-- only needs to say whose tools these are, and its prefix does that.
+-- ==========================================
+local TOOL_NUMBERS = { 'value', 'tile', 'size', 'material_size', 'capacity' }
+local TOOL_STRINGS = { 'name_plural', 'adjective', 'tint' }
+
+local function validate_tool(def, index, prefix)
+    local tag = "tools[" .. index .. "]"
+    if not is_table(def) then
+        return false, tag .. " must be a table"
+    end
+    if not is_nonempty_string(def.key) then
+        return false, tag .. ".key must be a non-empty string"
+    end
+    if def.key:find("%s") then
+        return false, tag .. ".key must not contain spaces: '" .. def.key .. "'"
+    end
+    if def.key ~= def.key:upper() then
+        return false, tag .. ".key must be UPPERCASE: '" .. def.key .. "'"
+    end
+    if not is_nonempty_string(def.name) then
+        return false, tag .. ".name must be a non-empty string"
+    end
+    for _, f in ipairs(TOOL_STRINGS) do
+        if def[f] ~= nil and not is_string(def[f]) then
+            return false, tag .. "." .. f .. " must be a string or null"
+        end
+    end
+    for _, f in ipairs(TOOL_NUMBERS) do
+        if def[f] ~= nil and not is_number(def[f]) then
+            return false, tag .. "." .. f .. " must be a number or null"
+        end
+    end
+    if not is_nil_or_table(def.flags) then
+        return false, tag .. ".flags must be a table or null"
+    end
+    if not is_nil_or_table(def.graphics) then
+        return false, tag .. ".graphics must be a table or null"
+    end
+    if def.tool_use ~= nil then
+        if not is_table(def.tool_use) then
+            return false, tag .. ".tool_use must be an array or null"
+        end
+        for i, u in ipairs(def.tool_use) do
+            if not is_nonempty_string(u) then
+                return false, tag .. ".tool_use[" .. i .. "] must be a non-empty string"
+            end
+        end
+    end
     return true
+end
+
+function validate_tools(payload)
+    if not is_table(payload) or not is_table(payload.module)
+       or not is_nonempty_string(payload.module.prefix) then
+        return false, "module.prefix must be a non-empty string"
+    end
+    if not is_table(payload.tools) then
+        return false, "Missing 'tools' array"
+    end
+    local kept, omitted, seen_keys = {}, {}, {}
+    for i, def in ipairs(payload.tools) do
+        local ok, reason = validate_tool(def, i, payload.module.prefix)
+        if ok and seen_keys[def.key] then
+            ok, reason = false, "tools[" .. i .. "].key '" .. def.key .. "' is duplicated"
+        end
+        if ok then
+            seen_keys[def.key] = true
+            kept[#kept + 1] = def
+        else
+            omitted[#omitted + 1] = { reason = reason,
+                key = type(def) == 'table' and is_nonempty_string(def.key) and def.key or nil }
+        end
+    end
+    if #kept == 0 then
+        return false, "no valid tools; the first: " .. tostring(omitted[1] and omitted[1].reason)
+    end
+    payload.tools = kept
+    return true, omitted
 end
 
 
