@@ -89,6 +89,10 @@ def load_engine_types(path):
     # Reagent types, with the two per-type requirements the validator
     # enforces. Value is (needs_mat_id, needs_metal_id).
     reagents = {}
+    # Each type's own reaction class, '' for none: a reagent naming no
+    # class of its own asks for the type's, and READS turns it into words
+    # the same way (refinish-module-react.lua).
+    reagent_classes = {}
     # Brace-match the table rather than regex to the first line that
     # starts with a closing brace. Multi-line entries such as COKE
     # contain their own column-zero-ish closers, and CRLF endings put a
@@ -112,6 +116,8 @@ def load_engine_types(path):
                 r'^[ \t]+([A-Z_0-9]+)\s*=\s*\{(.*?)\}\s*,?\s*$',
                 m.group(1), re.S | re.M):
             body = entry.group(2)
+            reagent_classes[entry.group(1)] = (re.search(
+                r'reaction_class\s*=\s*"([^"]*)"', body) or [None, ''])[1]
             reagents[entry.group(1)] = (
                 bool(re.search(r'needs_mat_id\s*=\s*true', body)),
                 bool(re.search(r'needs_metal_id\s*=\s*true', body)),
@@ -134,12 +140,31 @@ def load_engine_types(path):
     if m:
         skills = set(re.findall(r'^\s+([A-Z_0-9]+)\s*=\s*\S', m.group(1), re.M))
 
+    # JOB_ITEM_VECTORS is a LIST of quoted names, not key = value
+    # entries, so table_keys cannot read it. Its own extractor rather
+    # than loosening that one, because a pattern matching both shapes
+    # would also match half the file.
+    vectors = set()
+    mv = re.search(r'^JOB_ITEM_VECTORS = \{(.*?)^\}', text, re.S | re.M)
+    if mv:
+        vectors = set(re.findall(r"'([A-Z_0-9]+)'", mv.group(1)))
+
+    # Same shape, same reason: a list of quoted names rather than
+    # key = value entries.
+    tool_uses = set()
+    mt = re.search(r'^TOOL_USES = \{(.*?)^\}', text, re.S | re.M)
+    if mt:
+        tool_uses = set(re.findall(r"'([A-Z_0-9]+)'", mt.group(1)))
+
     return {
         'reagents':  reagents,
+        'reagent_classes': reagent_classes,
         'products':  products,
         'classes':   table_keys('MATERIAL_CLASS_PRESETS'),
         'buildings': table_keys('BUILDING_TYPES'),
         'skills':    skills,
+        'vectors':   vectors,
+        'tool_uses': tool_uses,
     }
 
 
@@ -148,6 +173,8 @@ def load_engine_types(path):
 # ===============================================================
 ERRORS = []
 WARNINGS = []
+# words -> the class they stand for, across every file checked (READS).
+READS_CLASS = {}
 
 
 def err(msg):
@@ -349,6 +376,30 @@ def check_materials(doc, engine, label):
                  "not loaded the material renders grey with no error."
                  % (t, x.get('color')))
 
+        # ---- dye colour override ----
+        # Read by RM only on a dye (IS_DYE from the DYE class or a
+        # material_flags override). Anywhere else it does nothing.
+        dc = x.get('dye_color')
+        if dc is not None and not is_str(dc):
+            err("%s.dye_color must be a string or null" % t)
+        elif dc is not None and cls != 'DYE' \
+                and not (x.get('material_flags') or {}).get('IS_DYE'):
+            warn('dye_color',
+             "%s: dye_color is set but the material is not a dye (class "
+                 "%r, no IS_DYE flag). RM ignores it." % (t, cls))
+
+        # ---- a dye declared as an inorganic ----
+        # Measured 2026-09-23: DF stores an inorganic powder as its bag,
+        # under Furniture as Bags, with no listing by material (vanilla
+        # plaster does the same). Registered under Milled Plants anyway,
+        # it is listed by name and never hauled there. A dye declared on
+        # a plant host lists and hauls under Milled Plants like vanilla.
+        if cls == 'DYE' or (x.get('material_flags') or {}).get('IS_DYE'):
+            warn('inorganic_dye',
+             "%s: a dye declared as an inorganic. DF stores its bag under "
+                 "Furniture with no listing by name, so players cannot find "
+                 "it. Declare dyes on a plant host in the plants file." % t)
+
         # ---- numbers ----
         for f in ('value', 'solid_density', 'liquid_density', 'molar_mass'):
             if not is_nil_or_num(x.get(f)):
@@ -392,6 +443,21 @@ def check_materials(doc, engine, label):
         if cls == 'GEM' and g is None:
             err("%s: material_class GEM requires gem_names" % t)
 
+        # ---- item type name overrides ----
+        # block_name is a {singular, plural} pair suffixed onto the
+        # material name. stone_name is one already-plural string that
+        # replaces the name outright. Different shapes, same purpose.
+        bn = x.get('block_name')
+        if bn is not None:
+            if not isinstance(bn, list) or len(bn) != 2:
+                err("%s.block_name must be an array of exactly 2 strings or null" % t)
+            elif not (is_str(bn[0]) and is_str(bn[1])):
+                err("%s.block_name entries must be strings" % t)
+
+        sn = x.get('stone_name')
+        if sn is not None and not is_str(sn):
+            err("%s.stone_name must be a single string or null, not a pair" % t)
+
         # ---- classes and products ----
         rc = x.get('reaction_classes')
         if rc is not None:
@@ -401,6 +467,31 @@ def check_materials(doc, engine, label):
                 for j, c in enumerate(rc, 1):
                     if not is_str(c):
                         err("%s.reaction_classes[%d] must be a string" % (t, j))
+
+        gfx = x.get('graphics')
+        if gfx is not None:
+            if not isinstance(gfx, dict):
+                err("%s.graphics must be a table or null" % t)
+            else:
+                slots = ('bar', 'boulder', 'wood', 'rough',
+                         'cheese', 'texflag')
+                for slot, entry in gfx.items():
+                    if slot not in slots:
+                        err("%s.graphics has unknown slot '%s'"
+                            % (t, slot))
+                    elif is_str(entry):
+                        pass
+                    elif isinstance(entry, dict):
+                        if not is_nonempty_str(entry.get('donor')):
+                            err("%s.graphics.%s.donor must be a string"
+                                % (t, slot))
+                        if entry.get('offset') is not None and \
+                           not isinstance(entry['offset'], (int, float)):
+                            err("%s.graphics.%s.offset must be a number"
+                                % (t, slot))
+                    else:
+                        err("%s.graphics.%s must be a donor string"
+                            " or a table" % (t, slot))
 
         rp = x.get('reaction_products')
         if rp is not None:
@@ -432,6 +523,10 @@ def check_reagent(g, j, tag, engine):
     if not is_nonempty_str(g.get('code')):
         err("%s.code is required" % t)
 
+    rd = g.get('reads')
+    if rd is not None and not is_nonempty_str(rd):
+        err("%s.reads must be a non-empty string" % t)
+
     ty = g.get('type')
     if not is_nonempty_str(ty):
         err("%s.type is required" % t)
@@ -439,14 +534,20 @@ def check_reagent(g, j, tag, engine):
         err("%s.type %r is not a recognized reagent type" % (t, ty))
     else:
         needs_mat, needs_metal = engine['reagents'][ty]
-        if needs_mat and not is_nonempty_str(g.get('mat_id')):
+        # mat_token is the other way to name the material: any material
+        # by full token, a plant's above all (a log's PLANT_MAT:<tree>:WOOD).
+        tok = g.get('mat_token')
+        if tok is not None and not is_nonempty_str(tok):
+            err("%s.mat_token must be a non-empty string" % t)
+        if needs_mat and not is_nonempty_str(g.get('mat_id')) \
+           and not is_nonempty_str(tok):
             if is_sentinel(g, 'mat_id'):
                 warn('sentinel',
                      "%s: mat_id is explicitly null. Your module Lua must fill "
                      "it in before returning the data, or the engine rejects "
                      "this reagent." % t)
             else:
-                err("%s: type %r requires mat_id" % (t, ty))
+                err("%s: type %r requires mat_id or mat_token" % (t, ty))
         if needs_metal and not is_nonempty_str(g.get('metal_id')):
             if is_sentinel(g, 'metal_id'):
                 warn('sentinel',
@@ -469,6 +570,30 @@ def check_reagent(g, j, tag, engine):
         if not is_nil_or_str(g.get(f)):
             err("%s.%s must be a string or null" % (t, f))
 
+    # vector_id names one of DF's 136 item vectors. The engine resolves
+    # it against the live enum and leaves the field alone on a miss, so
+    # a typo cannot open the filter, but it does mean the gate the
+    # author wanted silently is not there. Caught here instead, hours
+    # earlier and without a game running.
+    # has_tool_use resolves by name through df.tool_uses. A miss no
+    # longer silently reaches -1, the wildcard, but the engine can only
+    # say so once the game is running. Said here first.
+    tu = g.get('has_tool_use')
+    if tu is not None:
+        if not is_nonempty_str(tu):
+            err("%s.has_tool_use must be a string or null" % t)
+        elif engine.get('tool_uses') and tu not in engine['tool_uses']:
+            err("%s.has_tool_use %r is not a df.tool_uses value. "
+                "See TOOL_USES in the types file." % (t, tu))
+
+    vid = g.get('vector_id')
+    if vid is not None:
+        if not is_nonempty_str(vid):
+            err("%s.vector_id must be a string or null" % t)
+        elif engine.get('vectors') and vid not in engine['vectors']:
+            err("%s.vector_id %r is not a df.job_item_vector_id value. "
+                "See JOB_ITEM_VECTORS in the types file." % (t, vid))
+
     # ---- warnings the validator does not raise ----
     flags = g.get('flags') or {}
 
@@ -480,7 +605,9 @@ def check_reagent(g, j, tag, engine):
     # build_reagent plus every entry in REAGENT_FLAG_MAP. Re-copy this
     # set whenever that file gains flags.
     for name in flags:
-        if name not in KNOWN_REAGENT_FLAGS:
+        # Underscore keys are documentation (the templates' convention);
+        # the reaction builder never reads them.
+        if name not in KNOWN_REAGENT_FLAGS and not str(name).startswith('_'):
             err("%s.flags.%s is not a recognized flag name. The reaction "
                 "builder ignores unknown flags, so the filter you intended "
                 "will not be applied." % (t, name))
@@ -576,8 +703,12 @@ def check_reagent(g, j, tag, engine):
 # Grouped the way react.lua handles them, not the way DF groups them by
 # bitfield, so the two files can be diffed against each other.
 KNOWN_REAGENT_FLAGS = frozenset((
-    # reagent-level, not job item filter bits
-    'preserve', 'in_container',
+    # reagent-level, not job item filter bits. does_not_determine_
+    # product_amount is real: build_reagent maps it directly onto the
+    # reagent flags (refinish-module-react.lua), it was just never
+    # copied into this set, so preflight called nine healthy reagents
+    # broken.
+    'preserve', 'in_container', 'does_not_determine_product_amount',
 
     # mapped explicitly in build_reagent
     'empty', 'glass_material', 'unrotten',
@@ -656,7 +787,11 @@ def check_product(p, j, tag, codes, engine):
 
     # ---- builtin-material products name no material ----
     builtin = engine['products'].get(ptype, False)
-    sources = sum(1 for f in ('mat_id', 'get_material_same', 'get_material_product')
+    # mat_token is the fourth material mode: a full token resolved
+    # live at build time, for plant materials whose mat_type is 419
+    # plus the host plant's own index and so cannot live in a table.
+    sources = sum(1 for f in ('mat_id', 'mat_token', 'get_material_same',
+                              'get_material_product')
                   if p.get(f) is not None)
 
     if not (builtin and sources == 0):
@@ -838,6 +973,31 @@ def check_reactions(doc, engine, label):
                      "reagent declares 'contains' pointing at it. The slot will "
                      "never be filled." % (t, g.get('code')))
 
+        # ---- reads (READS, refinish-module-react.lua) ----
+        # The words land on the reagent's class, or on its code when another
+        # reagent contains it. With neither, DF never prints them. One set of
+        # words stands for one class only, across every file checked: a
+        # reagent asking for them matches every material carrying them.
+        for g in rgts:
+            if not isinstance(g, dict) or not is_nonempty_str(g.get('reads')):
+                continue
+            cls = g.get('reaction_class') or \
+                engine.get('reagent_classes', {}).get(g.get('type'), '')
+            # No class but a product gate: the gate becomes the words
+            # (PRODUCT GATED, refinish-module-react.lua), keyed as there.
+            if not cls and is_nonempty_str(g.get('has_material_reaction_product')):
+                cls = '@product:' + g['has_material_reaction_product']
+            if not cls and g.get('code') not in contained:
+                warn('reads_no_lever',
+                     "%s: reagent %r reads %r but has no class and is not "
+                     "contained, so DF never prints it." % (t, g.get('code'), g['reads']))
+            if cls:
+                held = READS_CLASS.setdefault(g['reads'], cls)
+                if held != cls:
+                    err("%s: reagent %r reads %r, which already stands for class "
+                        "%s; it would match both classes' materials."
+                        % (t, g.get('code'), g['reads'], held))
+
         # ---- products ----
         prods = r.get('products')
         if not isinstance(prods, list) or not prods:
@@ -982,19 +1142,444 @@ def check_cross_references(prefix, mats, rxns, cats):
 
 
 # ===============================================================
+# PLANTS
+# ===============================================================
+# A plant is a HOST: a shell whose own materials a module addresses
+# as PLANT_MAT:<PLANT ID>:<KEY>. It exists because a bar of an
+# inorganic material displays "charcoal bars" while the same bar of a
+# plant material displays "charcoal", and material mode is the only
+# lever on that suffix.
+#
+# The file is OPTIONAL. A module without one is the normal case and
+# is not warned about.
+# ===============================================================
+def check_plants(doc, engine, label):
+    """Validate the plants array. Returns the list of plant dicts."""
+    if not is_table(doc):
+        err("%s is not a JSON object" % label)
+        return []
+
+    plants = doc.get('plants')
+    if plants is None:
+        return []
+    if not isinstance(plants, list):
+        err("%s: 'plants' must be an array" % label)
+        return []
+
+    seen = set()
+    for i, pl in enumerate(plants):
+        t = "%s plants[%d]" % (label, i)
+        if not is_table(pl):
+            err("%s is not an object" % t)
+            continue
+
+        key = pl.get('key')
+        if not is_nonempty_str(key):
+            err("%s.key is required" % t)
+        elif key in seen:
+            err("%s.key %r is duplicated" % (t, key))
+        else:
+            seen.add(key)
+            t = "%s plants (%s)" % (label, key)
+
+        if not is_nonempty_str(pl.get('name')):
+            err("%s.name is required" % t)
+
+        # donor_plant names a plant in the RAWS, not in this file, so
+        # it cannot be resolved offline. Only its shape is checked.
+        if not is_nil_or_str(pl.get('donor_plant')):
+            err("%s.donor_plant must be a string" % t)
+
+        mats = pl.get('materials')
+        if mats is None:
+            warn('plant_no_materials',
+                 "%s declares no materials, so it keeps the donor's as "
+                 "placeholders. Legal, but nothing can address it." % t)
+            continue
+        if not isinstance(mats, list) or not mats:
+            err("%s.materials must be a non-empty array" % t)
+            continue
+
+        mseen = set()
+        for j, md in enumerate(mats):
+            mt = "%s.materials[%d]" % (t, j)
+            if not is_table(md):
+                err("%s is not an object" % mt)
+                continue
+
+            mkey = md.get('key')
+            if not is_nonempty_str(mkey):
+                err("%s.key is required" % mt)
+            elif mkey in mseen:
+                err("%s.key %r is duplicated on this plant" % (mt, mkey))
+            else:
+                mseen.add(mkey)
+                mt = "%s.materials (%s)" % (t, mkey)
+
+            # The key must NOT repeat the module prefix: the plant's own
+            # id already carries it, and the token is built from both.
+            if is_nonempty_str(mkey) and is_nonempty_str(doc.get('module', {}).get('prefix')) \
+               and mkey.startswith(doc['module']['prefix']):
+                err("%s.key repeats the module prefix. The token is built as "
+                    "PLANT_MAT:<prefixed plant id>:<key>, so the key is bare."
+                    % mt)
+
+            if not is_nonempty_str(md.get('name')):
+                err("%s.name is required, and it is what the item displays "
+                    "as: a blank name renders a leading space." % mt)
+
+            cls = md.get('material_class')
+            if is_nonempty_str(cls) and cls not in engine['classes']:
+                err("%s.material_class %r is not a recognized class" % (mt, cls))
+
+            # Same rule as the inorganic check: read only on a dye, and
+            # on this path only the DYE class makes one (plant materials
+            # take no material_flags overrides).
+            dc = md.get('dye_color')
+            if dc is not None and not is_str(dc):
+                err("%s.dye_color must be a string or null" % mt)
+            elif dc is not None and cls != 'DYE':
+                warn('dye_color',
+                     "%s: dye_color is set but the material is not a dye (class "
+                     "%r). RM ignores it." % (mt, cls))
+
+            rcs = md.get('reaction_classes')
+            if rcs is not None:
+                if not isinstance(rcs, list):
+                    err("%s.reaction_classes must be an array" % mt)
+                else:
+                    for rc in rcs:
+                        if not is_nonempty_str(rc):
+                            err("%s.reaction_classes holds a non-string" % mt)
+
+            for numf in ('solid_density', 'value'):
+                if not is_nil_or_num(md.get(numf)):
+                    err("%s.%s must be a number" % (mt, numf))
+
+    return plants
+
+
+def check_plant_tokens(prefix, plants, rxns):
+    """Every mat_token naming this module's own plant host must name a
+    plant and a material that exist.
+
+    This is the check that would have caught a cinder pointed at a
+    material nobody declared: the engine resolves a token live and
+    logs a warning, but the reaction is already injected by then and
+    the product silently makes nothing."""
+    known = set()
+    for pl in plants:
+        pkey = pl.get('key')
+        if not is_nonempty_str(pkey):
+            continue
+        pid = prefix + pkey
+        for md in pl.get('materials') or []:
+            if is_table(md) and is_nonempty_str(md.get('key')):
+                known.add('PLANT_MAT:%s:%s' % (pid, md['key']))
+
+    for r in rxns:
+        tag = "reactions (%s)" % r.get('key')
+        # Reagents name materials by token too (a log's
+        # PLANT_MAT:<tree>:WOOD), so both halves get the same check.
+        slots = [('product', x) for x in (r.get('products') or [])] + \
+                [('reagent', x) for x in (r.get('reagents') or [])]
+        for kind, p in slots:
+            if not is_table(p):
+                continue
+            tok = p.get('mat_token')
+            if not is_nonempty_str(tok):
+                continue
+
+            parts = tok.split(':')
+            if len(parts) != 3:
+                err("%s %s mat_token %r is malformed. The form is "
+                    "PLANT_MAT:<plant id>:<material key>." % (tag, kind, tok))
+                continue
+            if parts[0] != 'PLANT_MAT':
+                # INORGANIC, CREATURE_MAT and the rest are legal and
+                # cannot be resolved offline.
+                continue
+            if not parts[1].startswith(prefix):
+                # A vanilla or other mod's plant, resolved at build time.
+                continue
+            if tok not in known:
+                err("%s %s mat_token %r names this module's prefix but "
+                    "no plant material declares it. Check the plants file "
+                    "for that plant key and material key." % (tag, kind, tok))
+
+
+# ===============================================================
+# TOOLS
+# ===============================================================
+# Injected itemdefs. A reaction addresses one by its FULL id, prefix
+# and all, in a reagent's tool_id or in a product's subtype.
+#
+# The file is OPTIONAL. What is not optional, once a reaction names a
+# tool, is that the tool exists: an unknown itemdef leaves the slot
+# UNRESTRICTED, so the reaction still injects and then accepts any
+# tool at all, which is worse than failing.
+# ===============================================================
+def check_tools(doc, label):
+    """Validate the tools array. Returns the list of tool dicts."""
+    if not is_table(doc):
+        err("%s is not a JSON object" % label)
+        return []
+    tools = doc.get('tools')
+    if tools is None:
+        return []
+    if not isinstance(tools, list):
+        err("%s: 'tools' must be an array" % label)
+        return []
+
+    seen = set()
+    for i, td in enumerate(tools):
+        t = "%s tools[%d]" % (label, i)
+        if not is_table(td):
+            err("%s is not an object" % t)
+            continue
+
+        key = td.get('key')
+        if not is_nonempty_str(key):
+            err("%s.key is required" % t)
+        elif key in seen:
+            err("%s.key %r is duplicated" % (t, key))
+        else:
+            seen.add(key)
+            t = "%s tools (%s)" % (label, key)
+
+        for f in ('name', 'name_plural'):
+            if not is_nonempty_str(td.get(f)):
+                err("%s.%s is required" % (t, f))
+
+        for f in ('value', 'tile', 'size', 'material_size', 'capacity'):
+            if not is_nil_or_num(td.get(f)):
+                err("%s.%s must be a number" % (t, f))
+
+        tu = td.get('tool_use')
+        if tu is not None:
+            if not isinstance(tu, list):
+                err("%s.tool_use must be an array" % t)
+            else:
+                for u in tu:
+                    if not is_nonempty_str(u):
+                        err("%s.tool_use holds a non-string" % t)
+
+        fl = td.get('flags')
+        if fl is not None and not is_table(fl):
+            err("%s.flags must be an object" % t)
+
+    return tools
+
+
+# ===============================================================
+# BUILDINGS
+# ===============================================================
+# Injected workshops and furnaces. A reaction names one by its BARE
+# key, unlike a tool: "RETORT", not "MAKING_FUEL_RETORT". A reaction
+# may equally name a vanilla building, so an unrecognised code is an
+# error only when it is neither vanilla nor declared here.
+# ===============================================================
+def check_buildings(doc, engine, label):
+    """Validate the buildings array. Returns the list of dicts."""
+    if not is_table(doc):
+        err("%s is not a JSON object" % label)
+        return []
+    blds = doc.get('buildings')
+    if blds is None:
+        return []
+    if not isinstance(blds, list):
+        err("%s: 'buildings' must be an array" % label)
+        return []
+
+    seen = set()
+    for i, bd in enumerate(blds):
+        t = "%s buildings[%d]" % (label, i)
+        if not is_table(bd):
+            err("%s is not an object" % t)
+            continue
+
+        key = bd.get('key')
+        if not is_nonempty_str(key):
+            err("%s.key is required" % t)
+        elif key in seen:
+            err("%s.key %r is duplicated" % (t, key))
+        else:
+            seen.add(key)
+            t = "%s buildings (%s)" % (label, key)
+
+        cls = bd.get('class')
+        if cls not in ('WORKSHOP', 'FURNACE'):
+            err("%s.class must be WORKSHOP or FURNACE, got %r" % (t, cls))
+
+        if not is_nonempty_str(bd.get('name')):
+            err("%s.name is required" % t)
+
+        # dim, workloc and block have to agree. A work tile outside the
+        # footprint is a building nobody can use, and a block grid of
+        # the wrong shape is read row by row into the wrong cells.
+        dim = bd.get('dim')
+        if not (isinstance(dim, list) and len(dim) == 2
+                and all(is_num(v) and v > 0 for v in dim)):
+            err("%s.dim must be two positive numbers" % t)
+        else:
+            wl = bd.get('workloc')
+            if wl is not None:
+                if not (isinstance(wl, list) and len(wl) == 2
+                        and all(is_num(v) for v in wl)):
+                    err("%s.workloc must be two numbers" % t)
+                elif not (0 <= wl[0] < dim[0] and 0 <= wl[1] < dim[1]):
+                    err("%s.workloc %r is outside dim %r, so the building "
+                        "would have no reachable work tile" % (t, wl, dim))
+
+            blk = bd.get('block')
+            if blk is not None:
+                if not isinstance(blk, list) or len(blk) != dim[1]:
+                    err("%s.block must have one row per dim height (%d)"
+                        % (t, dim[1]))
+                else:
+                    for ri, row in enumerate(blk):
+                        if not isinstance(row, list) or len(row) != dim[0]:
+                            err("%s.block row %d must have %d entries"
+                                % (t, ri, dim[0]))
+
+        if not is_nil_or_num(bd.get('build_stages')):
+            err("%s.build_stages must be a number" % t)
+
+        # build_items reuse the reagent item types, plus NONE. The injector
+        # (refinish-module-inject-building.lua, build_item_from) resolves a
+        # build item's type through df.item_type, where NONE is -1, any item
+        # type: how DF's own buildings ask for a building material, with
+        # flags2 building_material. A reagent-only name such as ANY or
+        # BAR_ANY passes here but is not a df.item_type name, and the
+        # injector refuses it.
+        bi = bd.get('build_items')
+        if bi is not None:
+            if not isinstance(bi, list) or not bi:
+                err("%s.build_items must be a non-empty array" % t)
+            else:
+                for j, it in enumerate(bi):
+                    it_t = "%s.build_items[%d]" % (t, j)
+                    if not is_table(it):
+                        err("%s is not an object" % it_t)
+                        continue
+                    ty = it.get('type')
+                    if not is_nonempty_str(ty):
+                        err("%s.type is required" % it_t)
+                    elif ty not in engine['reagents'] and ty != 'NONE':
+                        err("%s.type %r is not a recognized item type"
+                            % (it_t, ty))
+                    if not is_nil_or_num(it.get('quantity')):
+                        err("%s.quantity must be a number" % it_t)
+
+    return blds
+
+
+def check_asset_references(prefix, tools, blds, rxns, engine):
+    """Every tool a reaction names must be declared, and every building
+    must be either declared here or known to the engine.
+
+    The tool half is the check that would have caught MAKING_FUEL_TWIG:
+    the engine logs 'itemdef not found, slot left unrestricted' and
+    injects the reaction anyway, so it silently accepts any tool."""
+    own_tools = set()
+    for t in tools:
+        if is_nonempty_str(t.get('key')):
+            own_tools.add(prefix + t['key'])
+    own_blds = set()
+    for b in blds:
+        if is_nonempty_str(b.get('key')):
+            own_blds.add(b['key'])
+
+    def check_tool(value, where):
+        if not is_nonempty_str(value):
+            return
+        # ITEM_TOOL_* names a vanilla itemdef, resolved by DF itself.
+        if value.startswith('ITEM_TOOL_'):
+            return
+        if value.startswith(prefix) and value not in own_tools:
+            err("%s names tool %r, which this module's prefix claims but no "
+                "tool declares. The engine leaves the slot UNRESTRICTED, so "
+                "the reaction injects and then accepts any tool."
+                % (where, value))
+
+    for r in rxns:
+        tag = "reactions (%s)" % r.get('key')
+        for g in r.get('reagents') or []:
+            if is_table(g):
+                check_tool(g.get('tool_id'),
+                           tag + " reagent %r" % g.get('code'))
+                check_tool(g.get('subtype'),
+                           tag + " reagent %r" % g.get('code'))
+        for p in r.get('products') or []:
+            if is_table(p):
+                check_tool(p.get('subtype'), tag + " product")
+
+        b = r.get('building')
+        if is_nonempty_str(b) and b not in engine['buildings'] \
+           and b not in own_blds:
+            err("%s.building %r is neither a known building nor declared in "
+                "this module's buildings file. A reaction names a building by "
+                "its BARE key, without the module prefix." % (tag, b))
+
+
+# ===============================================================
 # FILE DISCOVERY
 # ===============================================================
 def autodiscover(folder):
-    """Find one materials file and one reactions file in a folder."""
+    """Find one module's materials file and all of its reaction files.
+
+    Reactions are either a single <module>_reactions.json or a split set
+    of <module>_reactions_<part>.json. Both shapes are ONE module, so the
+    set comes back as a list and validates merged, the same shape the
+    loader hands the engine.
+
+    Files are grouped by the module prefix, the part before _reactions.
+    Two modules sharing a folder is an error rather than a guess, for the
+    same reason the optional companions refuse to guess."""
     mats = sorted(glob.glob(os.path.join(folder, '*_materials.json')))
-    rxns = sorted(glob.glob(os.path.join(folder, '*_reactions.json')))
-    if len(mats) != 1 or len(rxns) != 1:
+    rxns = sorted(glob.glob(os.path.join(folder, '*_reactions.json'))
+                  + glob.glob(os.path.join(folder, '*_reactions_*.json')))
+    by_mod = {}
+    for p in rxns:
+        prefix = os.path.basename(p).split('_reactions')[0]
+        by_mod.setdefault(prefix, []).append(p)
+    if len(mats) != 1 or len(by_mod) != 1:
         return None, None, (
-            "Found %d materials file(s) and %d reactions file(s) in %s.\n"
-            "Expected exactly one of each named <something>_materials.json and\n"
-            "<something>_reactions.json, or pass the paths as arguments."
-            % (len(mats), len(rxns), os.path.abspath(folder)))
-    return mats[0], rxns[0], None
+            "Found %d materials file(s) and %d module(s) of reaction files "
+            "in %s.\n"
+            "Expected exactly one of each, named <module>_materials.json and\n"
+            "either <module>_reactions.json or <module>_reactions_<part>.json,\n"
+            "or pass the paths as arguments."
+            % (len(mats), len(by_mod), os.path.abspath(folder)))
+    return mats[0], sorted(next(iter(by_mod.values()))), None
+
+
+def autodiscover_optional(folder, suffix, flag):
+    """Optional companion file. At most one: more than one is an error
+    the caller reports, because guessing which one a module meant is
+    the kind of guess that costs a session."""
+    found = sorted(glob.glob(os.path.join(folder, '*_%s.json' % suffix)))
+    if len(found) == 1:
+        return found[0], None
+    if not found:
+        return None, None
+    return None, ("Found %d %s file(s) in %s. Expected at most one named "
+                  "<something>_%s.json, or pass %s with its path."
+                  % (len(found), suffix, os.path.abspath(folder), suffix, flag))
+
+
+def autodiscover_plants(folder):
+    """Optional. Returns a path or None; more than one is an error the
+    caller reports, because guessing which host a module meant is
+    exactly the kind of guess that costs a session."""
+    found = sorted(glob.glob(os.path.join(folder, '*_plants.json')))
+    if len(found) == 1:
+        return found[0], None
+    if not found:
+        return None, None
+    return None, ("Found %d plants file(s) in %s. Expected at most one named "
+                  "<something>_plants.json, or pass --plants with its path."
+                  % (len(found), os.path.abspath(folder)))
 
 
 def load(path, what):
@@ -1017,8 +1602,15 @@ def main():
         description="Offline schema check for RM module JSON files.")
     ap.add_argument('materials', nargs='?',
                     help="materials JSON (auto-discovered if omitted)")
-    ap.add_argument('reactions', nargs='?',
-                    help="reactions JSON (auto-discovered if omitted)")
+    ap.add_argument('reactions', nargs='*',
+                    help="reactions JSON file(s); pass every part of a "
+                         "split set (auto-discovered if omitted)")
+    ap.add_argument('--plants',
+                    help="plants JSON (auto-discovered if omitted; optional)")
+    ap.add_argument('--tools',
+                    help="tools JSON (auto-discovered if omitted; optional)")
+    ap.add_argument('--buildings',
+                    help="buildings JSON (auto-discovered if omitted; optional)")
     ap.add_argument('--types', default='refinish-module-types.lua',
                     help="path to refinish-module-types.lua from your RM install")
     ap.add_argument('--verbose', action='store_true',
@@ -1040,12 +1632,15 @@ def main():
             print("into this folder, or pass --types with its path.")
             sys.exit(2)
 
-    mats_path, rxns_path = args.materials, args.reactions
-    if not mats_path or not rxns_path:
-        mats_path, rxns_path, problem = autodiscover(here)
+    # 'reactions' is now a list so a split set validates as one merged
+    # module, the same shape the loader hands the engine.
+    mats_path, rxns_paths = args.materials, args.reactions
+    if not mats_path or not rxns_paths:
+        mats_path, found_rxns, problem = autodiscover(here)
         if problem:
             print(problem)
             sys.exit(2)
+        rxns_paths = rxns_paths or found_rxns
 
     engine = load_engine_types(types_path)
     if not engine['reagents'] or not engine['buildings']:
@@ -1053,8 +1648,65 @@ def main():
         print("Check that it is a complete, current copy from your RM install.")
         sys.exit(2)
 
+    plants_path = args.plants
+    if not plants_path:
+        plants_path, problem = autodiscover_plants(here)
+        if problem:
+            print(problem)
+            sys.exit(2)
+
     mats_doc = load(mats_path, "this module's materials file")
-    rxns_doc = load(rxns_path, "this module's reactions file")
+    # Merge the reaction parts exactly the way the loader does:
+    # module from the first file, categories and reactions
+    # concatenated in argument order, duplicate keys a hard failure
+    # with both files named. Argument order matters for the same
+    # reason the loader's list order does: category order is menu
+    # tab order.
+    rxns_doc = None
+    seen_rxn, seen_cat = {}, {}
+    for rp in rxns_paths:
+        part = load(rp, "this module's reactions file")
+        if rxns_doc is None:
+            rxns_doc = {'module': part.get('module'),
+                        'categories': [], 'reactions': []}
+        for cat in part.get('categories') or []:
+            k = cat.get('key')
+            if k in seen_cat:
+                print("Category [%s] defined in both %s and %s."
+                      % (k, seen_cat[k], rp))
+                sys.exit(2)
+            seen_cat[k] = rp
+            rxns_doc['categories'].append(cat)
+        for rxn in part.get('reactions') or []:
+            k = rxn.get('key')
+            if k in seen_rxn:
+                print("Reaction [%s] defined in both %s and %s."
+                      % (k, seen_rxn[k], rp))
+                sys.exit(2)
+            seen_rxn[k] = rp
+            rxns_doc['reactions'].append(rxn)
+    rxns_path = ' + '.join(rxns_paths)
+    plants_doc = load(plants_path, "this module's plants file") \
+        if plants_path else None
+
+    tools_path = args.tools
+    if not tools_path:
+        tools_path, problem = autodiscover_optional(here, 'tools', '--tools')
+        if problem:
+            print(problem)
+            sys.exit(2)
+    blds_path = args.buildings
+    if not blds_path:
+        blds_path, problem = autodiscover_optional(here, 'buildings',
+                                                   '--buildings')
+        if problem:
+            print(problem)
+            sys.exit(2)
+
+    tools_doc = load(tools_path, "this module's tools file") \
+        if tools_path else None
+    blds_doc = load(blds_path, "this module's buildings file") \
+        if blds_path else None
 
     mats_label = os.path.basename(mats_path)
     rxns_label = os.path.basename(rxns_path)
@@ -1072,8 +1724,25 @@ def main():
     rxns = check_reactions(rxns_doc, engine, rxns_label)
     cats = check_categories(rxns_doc, rxns_label)
 
+    plants = []
+    if plants_doc is not None:
+        plants_label = os.path.basename(plants_path)
+        plants_prefix = check_module_block(plants_doc, plants_label)
+        if mats_prefix and plants_prefix and mats_prefix != plants_prefix:
+            err("module.prefix disagrees between files: %s has %r, %s has %r."
+                % (mats_label, mats_prefix, plants_label, plants_prefix))
+        plants = check_plants(plants_doc, engine, plants_label)
+
+    tools, blds = [], []
+    if tools_doc is not None:
+        tools = check_tools(tools_doc, os.path.basename(tools_path))
+    if blds_doc is not None:
+        blds = check_buildings(blds_doc, engine, os.path.basename(blds_path))
+
     if mats_prefix:
         check_cross_references(mats_prefix, mats, rxns, cats)
+        check_plant_tokens(mats_prefix, plants, rxns)
+        check_asset_references(mats_prefix, tools, blds, rxns, engine)
 
     # ---- report ----
     print("engine tables from %s: %d reagent types, %d product types, "
@@ -1081,7 +1750,11 @@ def main():
           % (os.path.basename(types_path), len(engine['reagents']),
              len(engine['products']), len(engine['buildings']),
              len(engine['skills']), len(engine['classes'])))
-    print("checked %s and %s" % (mats_label, rxns_label))
+    checked = [mats_label, rxns_label]
+    for pth in (plants_path, tools_path, blds_path):
+        if pth:
+            checked.append(os.path.basename(pth))
+    print("checked " + ", ".join(checked))
 
     if WARNINGS:
         # Group by kind. A 950-reaction module can produce hundreds of the
@@ -1114,8 +1787,11 @@ def main():
         print("\nPREFLIGHT FAILED: warnings treated as errors (--strict).")
         sys.exit(1)
 
-    print("\nPREFLIGHT PASSED: %d materials, %d reactions, %d categories"
-          % (len(mats), len(rxns), len(cats)))
+    n_plant_mats = sum(len(pl.get('materials') or []) for pl in plants)
+    print("\nPREFLIGHT PASSED: %d materials, %d reactions, %d categories, "
+          "%d plant(s) carrying %d material(s), %d tool(s), %d building(s)"
+          % (len(mats), len(rxns), len(cats), len(plants), n_plant_mats,
+             len(tools), len(blds)))
     sys.exit(0)
 
 

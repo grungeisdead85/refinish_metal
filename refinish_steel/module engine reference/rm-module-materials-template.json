@@ -33,7 +33,7 @@
         "  when one material references another, and in your reactions file.",
         "",
         "FULL FIELD DOCUMENTATION:",
-        "  RM_Module_Modder_Guide.md, section 4."
+        "  RM_MODULE_ENGINE_README.md, section 4."
     ],
 
     "module": {

@@ -35,7 +35,7 @@
         "  Module materials use the FULL prefixed ID (MYMOD_GOLDBRONZE).",
         "",
         "FULL FIELD DOCUMENTATION:",
-        "  RM_Module_Modder_Guide.md, sections 5 and 6.",
+        "  RM_MODULE_ENGINE_README.md, sections 5 and 6.",
         "  Every reagent type, product type, building and skill name is listed",
         "  in refinish-module-types.lua, which is the authoritative source."
     ],

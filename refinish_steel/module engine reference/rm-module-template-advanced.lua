@@ -32,7 +32,7 @@
 --   5. HELPER SCRIPT          Start and stop companion scripts.
 --      LIFECYCLE
 --   6. REGISTRATION           Hand the finished tables to RM.
---   7. SHUTDOWN HOOK          Stop everything on map unload.
+--   7. SHUTDOWN               Why no unload hook is needed.
 --
 -- SETUP:
 --   1. Set MODULE_ID to the [ID:...] from your mod's info.txt.
@@ -43,7 +43,7 @@
 --   5. Put your JSON files in your mod's data/ folder.
 --
 -- REFERENCE:
---   RM_Module_Modder_Guide.md, section 7.
+--   RM_MODULE_ENGINE_README.md, section 8.
 -- ==========================================
 
 local json = require('json')
@@ -445,9 +445,11 @@ end
 -- prints a warning instead of taking the module down with it.
 --
 -- WHY stop() MATTERS:
--- A helper that keeps running after the map unloads holds pointers
--- into freed world data. The shutdown hook at the bottom of this
--- file exists for exactly this reason and must not be removed.
+-- A helper that keeps running once your assets leave RAM polls against
+-- data that is gone. RM runs stop_helpers (the stop hook in the return
+-- table, section 6) before every save, a shutdown and the map unload,
+-- and runs start_helpers (the start hook) only once your module is
+-- accepted and injected, so a module RM rejects starts nothing.
 --
 -- Add one entry per helper script.
 -- ==========================================
@@ -495,6 +497,10 @@ end
 --   reactions   array from your reactions JSON, or nil
 --   categories  array from your reactions JSON, or nil
 --   module      the identity block from either file
+--   start       function RM runs once the module is accepted and
+--               injected: start your helper scripts here, never in
+--               the listener itself, which runs before validation
+--   stop        function RM runs before your assets leave RAM
 --
 -- Returning nil from the listener means "skip this module." Do
 -- that on any failure that would otherwise inject partial content.
@@ -561,10 +567,10 @@ local function register_with_rm()
         resolve_values(mat_data, rxn_data)
         patch_runtime_materials(rxn_data)
 
-        -- ---- START HELPERS ----
-        start_helpers()
-
         -- ---- HAND OFF ----
+        -- Helpers are not started here: RM starts them through the start
+        -- hook once this module is accepted and injected, and stops them
+        -- through stop before its assets leave RAM.
         return {
             materials  = mat_data and mat_data.materials or nil,
             reactions  = rxn_data and rxn_data.reactions or nil,
@@ -572,33 +578,24 @@ local function register_with_rm()
             module     = (mat_data and mat_data.module)
                          or (rxn_data and rxn_data.module)
                          or nil,
+            start      = start_helpers,
+            stop       = stop_helpers,
         }
     end)
 end
 
 
 -- ==========================================
--- 7. SHUTDOWN HOOK
+-- 7. SHUTDOWN
 -- ==========================================
--- Stops every helper when the map unloads.
---
--- DO NOT REMOVE THIS if you use helper scripts. A polling callback
--- that survives a map unload is reading world data that has been
--- freed, and the crash it causes will look like it came from
--- somewhere else entirely.
---
--- The table key must be unique across all of DFHack. Use your
--- module ID so it cannot collide with another mod's hook.
+-- No map unload hook is needed for your helpers: RM runs the stop hook
+-- from section 6 on every unload path, the map unload included, so no
+-- helper outlives the data it reads.
 --
 -- RM handles its own cleanup separately. Everything this module
 -- injected is swept out of RAM by the engine, so nothing here
 -- needs to undo an injection.
 -- ==========================================
-dfhack.onStateChange.my_module_unload = function(code)
-    if code == SC_MAP_UNLOADED then
-        stop_helpers()
-    end
-end
 
 
 -- ==========================================
