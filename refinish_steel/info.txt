@@ -1,6 +1,6 @@
 [ID:refinish_steel]
-[NUMERIC_VERSION:38]
-[DISPLAYED_VERSION:4.2.2]
+[NUMERIC_VERSION:39]
+[DISPLAYED_VERSION:4.2.3]
 [EARLIEST_COMPATIBLE_NUMERIC_VERSION:14]
 [EARLIEST_COMPATIBLE_DISPLAYED_VERSION:4.0.0]
 [AUTHOR:grungeisdead]
@@ -39,13 +39,10 @@
 [STEAM_DESCRIPTION:
 
 ==================================
-CHANGELOG v4.2.2: MOD UPDATE FIX
+CHANGELOG v4.2.3: CHURN FIX
 ==================================
 
-- Fixed RM running its previous version in a world that took an RM update. When a world takes an update as it loads, Dwarf Fortress can leave it pointed at the previous version's files, and RM ran those. Each world now runs the version it updated to. This also covers Making Fuel, Making Concrete, Stockhook, and the definition files Stockhook reads.
-- Fixed RM failing to start in an updated world whose old version's files were gone (for example after clearing the mod cache), which left RM's items showing as the wrong materials.
-- Fixed two versions of RM being able to run together in one Dwarf Fortress session, which broke Stockhook's category colours. RM now checks which version's code is actually loaded. If two are, it holds the world paused and tells you to close Dwarf Fortress without saving and start it again, instead of running both.
-- If that message appears after updating, close Dwarf Fortress without saving and start it again. When Dwarf Fortress offers to update a mod as a world loads, accept it.
+- Fixed a bug in refinish-stockpile-organic which was causing lag spikes and memory churn. 
 
 ]
 

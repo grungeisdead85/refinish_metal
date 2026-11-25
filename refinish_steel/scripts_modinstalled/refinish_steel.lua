@@ -459,7 +459,7 @@ local log_cal     = make_log('CALENDAR')    -- autosave timer
 -- It is a constant. It belongs where the file loads, not where a
 -- world event fires. Every consumer still guards with `or "?"`, which
 -- was the existing signal that nil was reachable.
-_G.refinish_version = "v4.0.0"
+_G.refinish_version = "v4.2.3"
 
 -- The Session Rotator: Cycle the logs ONLY ONCE per Dwarf Fortress launch
 if not _G.refinish_app_boot_rotation_done then

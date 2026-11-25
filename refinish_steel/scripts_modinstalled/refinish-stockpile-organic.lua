@@ -328,15 +328,26 @@ local function length(types, idxs)
     return math.min(try(function() return #types end, 0), try(function() return #idxs end, 0))
 end
 
-local function position_of(types, idxs, mt, mi)
-    local n = length(types, idxs)
-    for k = 0, n - 1 do
-        if try(function() return types[k] end) == mt
-           and try(function() return idxs[k] end) == mi then
-            return k
-        end
+local function check_existing_pos(types, idxs, n, cat, e)
+    local p = e.mat.food_mat_index[cat]
+    if p and p >= 0 and p < n and types[p] == e.mt and idxs[p] == e.mi then
+        return p
     end
     return nil
+end
+
+local function build_pos_map(types, idxs, n)
+    local map = {}
+    pcall(function()
+        for k = 0, n - 1 do
+            local mt = types[k]
+            local row = map[mt]
+            if not row then row = {}; map[mt] = row end
+            local mi = idxs[k]
+            if row[mi] == nil then row[mi] = k end
+        end
+    end)
+    return map
 end
 
 -- The reverse index: material to position (see BOTH DIRECTIONS ARE
@@ -377,48 +388,44 @@ end
 -- all; it is left alone, because growing it would hand it a food
 -- category it never had.
 local function grow_settings(cat_name, spec, target)
-    local bld = try(function() return df.global.world.buildings.all end)
-    local nb = bld and try(function() return #bld end, 0) or 0
+    local piles = try(function() return df.global.world.buildings.other.STOCKPILE end)
+    if not piles then return 0 end
     local grown = 0
-    for i = 0, nb - 1 do
-        local b = try(function() return bld[i] end)
-        if b and df.building_stockpilest:is_instance(b) then
-            local vec = settings_vector(b, spec.path)
-            local len = vec and try(function() return #vec end)
-            if vec and len and len > 0 and len < target then
-                -- The fill: see CATEGORIES.
-                local any_on, all_on = false, true
+    for i = 0, #piles - 1 do
+        local b = piles[i]
+        local vec = b and settings_vector(b, spec.path)
+        local len = vec and #vec or 0
+        if vec and len > 0 and len < target then
+            local any_on, all_on = false, true
+            pcall(function()
                 for k = 0, len - 1 do
-                    if is_on(try(function() return vec[k] end)) then any_on = true
-                    else all_on = false end
+                    if is_on(vec[k]) then any_on = true else all_on = false end
                 end
-                local fill = (spec.fill == 'all') and all_on or any_on
-                local ok = pcall(function()
-                    for _ = len, target - 1 do vec:insert('#', fill and 1 or 0) end
-                end)
-                -- Read back: the length reached, and every new slot holds
-                -- what was written.
-                if ok then
-                    ok = try(function() return #vec end, -1) == target
+            end)
+            local fill = (spec.fill == 'all') and all_on or any_on
+            local ok = pcall(function()
+                for _ = len, target - 1 do vec:insert('#', fill and 1 or 0) end
+            end)
+            if ok then
+                local ok_rb, verified = pcall(function()
+                    if #vec ~= target then return false end
                     for k = len, target - 1 do
-                        if ok and is_on(try(function() return vec[k] end)) ~= fill then
-                            ok = false
-                        end
+                        if is_on(vec[k]) ~= fill then return false end
                     end
-                end
-                local id = tostring(try(function() return b.id end))
-                if ok then
-                    grown = grown + 1
-                    log('DETAIL', ('stockpile %s: %s %d -> %d, new slots %s.'):format(
-                        id, table.concat(spec.path, '.'), len, target,
-                        fill and 'on' or 'off'), 'STOCKPILE')
-                else
-                    -- ERROR, once per pile: that pile cannot take the new
-                    -- slots, so those materials never reach it.
-                    fault_once('grow:' .. id .. ':' .. cat_name, 'ERROR', ('stockpile %s:'
-                        .. ' could not grow %s from %d to %d.'):format(id,
-                        table.concat(spec.path, '.'), len, target), 'STOCKPILE')
-                end
+                    return true
+                end)
+                ok = ok_rb and verified
+            end
+            local id = tostring(try(function() return b.id end))
+            if ok then
+                grown = grown + 1
+                log('DETAIL', ('stockpile %s: %s %d -> %d, new slots %s.'):format(
+                    id, table.concat(spec.path, '.'), len, target,
+                    fill and 'on' or 'off'), 'STOCKPILE')
+            else
+                fault_once('grow:' .. id .. ':' .. cat_name, 'ERROR', ('stockpile %s:'
+                    .. ' could not grow %s from %d to %d.'):format(id,
+                    table.concat(spec.path, '.'), len, target), 'STOCKPILE')
             end
         end
     end
@@ -445,34 +452,38 @@ local function sync_category(cat_name, list)
             .. ' unreadable for %s.'):format(cat_name), 'SYNC')
         return 0
     end
-    local added = 0
+    local n = length(types, idxs)
+    local pos_map = nil
+    local added, fixed, failed = 0, 0, nil
     for _, e in ipairs(list) do
-        if not position_of(types, idxs, e.mt, e.mi) then
-            local ok, err = pcall(function()
-                types:insert('#', e.mt)
-                idxs:insert('#', e.mi)
-            end)
-            if ok then
-                added = added + 1
-            else
-                fault_once('append:' .. tostring(e.label), 'ERROR', ('could not append'
-                    .. ' %s to %s: %s'):format(tostring(e.label), cat_name,
-                    tostring(err)), 'SYNC')
+        local ok_p, pos = pcall(check_existing_pos, types, idxs, n, cat, e)
+        if ok_p and pos then
+            fixed = fixed + 1
+        else
+            if not pos_map then pos_map = build_pos_map(types, idxs, n) end
+            local row = pos_map[e.mt]
+            pos = row and row[e.mi]
+            if not pos then
+                local ok, err = pcall(function()
+                    types:insert('#', e.mt)
+                    idxs:insert('#', e.mi)
+                end)
+                if ok then
+                    pos = n
+                    n = n + 1
+                    if not row then row = {}; pos_map[e.mt] = row end
+                    row[e.mi] = pos
+                    added = added + 1
+                else
+                    fault_once('append:' .. tostring(e.label), 'ERROR', ('could not append'
+                        .. ' %s to %s: %s'):format(tostring(e.label), cat_name,
+                        tostring(err)), 'SYNC')
+                end
             end
-        end
-    end
-    -- ---- REVERSE INDEX, EVERY MATERIAL, EVERY SYNC ----
-    -- Not only the newly appended ones: the enumeration is rebuilt from
-    -- raws each load while positions can land differently, and a stale
-    -- reverse index pointing at another material is worse than an absent
-    -- one. The write happens every sync; only the log line is
-    -- conditional.
-    local fixed, failed = 0, nil
-    for _, e in ipairs(list) do
-        local pos = position_of(types, idxs, e.mt, e.mi)
-        if pos then
-            local ok, why = set_reverse(e.mat, cat, pos)
-            if ok then fixed = fixed + 1 else failed = why end
+            if pos then
+                local ok_r, why = set_reverse(e.mat, cat, pos)
+                if ok_r then fixed = fixed + 1 else failed = why end
+            end
         end
     end
     if failed then
@@ -580,7 +591,8 @@ if args[1] == 'status' then
     end
     for cat_name, list in pairs(by_cat) do
         local cat = try(function() return df.organic_mat_category[cat_name] end)
-        local types, idxs = cat and vectors(cat)
+        local types, idxs = nil, nil
+        if cat ~= nil then types, idxs = vectors(cat) end
         print(('%-12s %d claimed, enumeration length %s'):format(cat_name, #list,
             types and tostring(length(types, idxs)) or '?'))
     end
