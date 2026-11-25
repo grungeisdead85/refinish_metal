@@ -1,23 +1,55 @@
 # Stockhook definition files
 
-Stockhook is Refinish Metal's stockpile system. It lets a mod (or a
-player) give items stockpile entries that Dwarf Fortress does not have, and
-decide which piles take them. No scripting is
-needed: entries are written in plain text files, in the same style as DF's
-raws.
+*Stockhook's own guide, shipped with Refinish Metal's built-in copy of
+Stockhook. In Refinish Metal the console command is `refinish-stockhook`.*
+
+Stockhook is a stockpile system for Dwarf Fortress mods. It lets a mod (or
+a player) give items stockpile entries that Dwarf Fortress does not have,
+and decide which piles take them. No scripting is needed: entries are
+written in plain text files, in the same style as DF's raws.
+
+Stockhook needs DFHack, and works on Windows only (its hook is a Windows
+DLL). The first time a fort with Stockhook loads, Dwarf Fortress has to be
+closed completely and started again once.
+
+Stockhook is a mod of its own, and Refinish Metal carries a copy of it
+built in, made from the same files. A world with either has Stockhook. In
+a world with both, only the standalone runs and Refinish Metal's copy
+stands aside, so everything below applies the same way in all three cases.
+
+## Using Stockhook in your mod
+
+1. Put your files in a `stockhook/` folder inside your mod's folder (see
+   below).
+2. Players add Stockhook (or Refinish Metal, which carries it) to the
+   world as well as your mod. To have DF insist on the standalone, put
+   `[REQUIRES_ID_BEFORE_ME:stockhook]` in your `info.txt`; in a world that
+   also has Refinish Metal, RM's copy then stands aside. Loading after
+   Stockhook also means your entries win a tie with Stockhook's own (When
+   two entries cover the same item, below).
+
+Without Stockhook in the world your files are simply not read, so a mod can
+ship them and work either way.
 
 ## Where the files go
 
 | Who | Folder | Entry ids become |
 |---|---|---|
 | A mod | `<your mod folder>/stockhook/` | `YOURMODID:ENTRY` |
-| A player, for every world that uses Refinish Metal | `dfhack-config/stockhook/` in DF's folder | `USER:ENTRY` |
+| A player, for every world that uses Stockhook | `dfhack-config/stockhook/` in DF's folder | `USER:ENTRY` |
 | A player, for one world | `stockhook/` inside that world's save folder | `WORLD:ENTRY` |
 
-Stockhook only runs in a world that has Refinish Metal in its load order,
-and a mod's files are only read while that mod is in the world's load order
-too. Nothing
-carries from one world to another.
+Stockhook only runs in a world that has Stockhook or Refinish Metal in its
+load order, and a mod's files are only read while that mod is in the
+world's load order too.
+Nothing carries from one world to another.
+
+Stockhook's own entries are in its own `stockhook/vanilla.txt`, so their ids
+start `STOCKHOOK:` (`STOCKHOOK:COKE`, `STOCKHOOK:TOOL_ITEM_TOOL_JUG`).
+Refinish Metal carries the same file in its own `stockhook/` folder, so in
+any world with Refinish Metal, with or without the standalone, the same
+entries start `REFINISH_STEEL:` instead. A mod hiding one of them names it
+under both (Hiding another source's entry, below).
 
 Any file ending in `.txt` in those folders is read. Do not put these files
 in your mod's `objects` folder: DF would try to read them as raws.
@@ -154,7 +186,10 @@ coals, which DF does not count as coal): for those the row alone decides.
 at all: no row, no claims, whatever the load order. For a mod whose world
 never holds what the entry covers, or that covers it itself. Making Fuel
 hides Stockhook's coke, charcoal and refined coal rows, since its coal
-watcher replaces every builtin coal bar with its own materials.
+watcher replaces every builtin coal bar with its own materials. It names
+each under both prefixes, `STOCKHOOK:` and `REFINISH_STEEL:` (Where the
+files go), so the same file works in worlds of either kind; hiding an entry
+that is not loaded does nothing.
 
 ## Generated rows
 
@@ -246,12 +281,31 @@ Some mods create materials after the world loads. A MATERIAL token that does
 not exist yet is retried for about a minute of play. If it never appears,
 `refinish-stockhook reload` prints which tokens are missing.
 
+## From Lua
+
+A mod that builds its entries while the game runs can call Stockhook
+directly: `reqscript('stockhook')` gives the API listed at the top of
+`scripts_modactive/stockhook.lua` (define, claim, alias, set, commit and
+the rest). Refinish Metal's copy is `reqscript('refinish-stockhook')`, with
+the same API. Only one copy is active in a world: try the standalone
+first, and use whichever copy's `world_active()` is true. Most mods never
+need any of this.
+
+## Where Stockhook writes
+
+In a world with Refinish Metal, Stockhook's lines go into Refinish Metal's
+`refinish_session.log`. In any other world they go into
+`stockhook_session.log` in DF's folder (the previous session's is kept as
+`stockhook_last_session.log`). The DLL writes its own `stockhook.log` there
+at every launch: whether it hooked, and why not when it did not.
+
 ## Console commands
 
 | Command | What it does |
 |---|---|
 | `refinish-stockhook` or `refinish-stockhook status` | Whether Stockhook is active, and every entry loaded |
 | `refinish-stockhook reload` | Read every definition file again, and list any problems |
+| `refinish-stockhook paths` | Where definition files are looked for, and what was found |
 | `refinish-stockhook piles` | Every pile's number and which rows are on |
 | `refinish-stockhook set <pile number> <entry id> on\|off` | Switch a row for one pile. The pile number is the one DF shows: "Stockpile #12" is 12. |
 

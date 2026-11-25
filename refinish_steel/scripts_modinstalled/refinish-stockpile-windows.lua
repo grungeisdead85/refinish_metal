@@ -543,8 +543,8 @@
 -- ==========================================
 -- STOCKHOOK, WHEN IT IS IN THE WORLD
 -- ==========================================
--- Stockhook (RM's stockpile hook: a DLL on DF's own stockpile check, with
--- its Lua in RM's scripts_modactive, refinish-stockhook.lua) can give an
+-- Stockhook (a DLL on DF's own stockpile check, its Lua in RM's built-in
+-- copy, refinish-stockhook.lua, or in the standalone Stockhook mod) can give an
 -- item another material for the length of each stockpile check: a
 -- MATERIAL ALIAS. A twin aliased to its source is filed by every pile
 -- exactly as an item of the source would be, by the pile's own settings,
@@ -963,13 +963,18 @@ end
 local SH = { owner = 'refinish-stockpile-windows', mod = nil, sig = nil }
 
 -- Stockhook's module when its hook is live, else nil. Asked once per
--- session (start() and a world unload clear it). Its scripts are in RM's
--- scripts_modactive, so they are on the path in every RM world;
+-- session (start() and a world unload clear it). Two copies can be on the
+-- path: the standalone Stockhook mod's (stockhook.lua) and RM's built-in one
+-- (refinish-stockhook.lua). Only one is active in a world (RM's stands
+-- aside for the standalone), and that is the one used;
 -- available() is false when its DLL is not hooked.
 function SH.here()
     if SH.mod == nil then
         SH.mod = false
-        local ok, m = pcall(reqscript, 'refinish-stockhook')
+        local ok, m = pcall(reqscript, 'stockhook')
+        local ok_w, on = false, false
+        if ok and type(m) == 'table' and m.world_active then ok_w, on = pcall(m.world_active) end
+        if not (ok_w and on) then ok, m = pcall(reqscript, 'refinish-stockhook') end
         if ok and type(m) == 'table' and m.world_active and m.available and m.alias and m.commit then
             local ok_w, active = pcall(m.world_active)
             local ok_a, avail, why = pcall(m.available)
@@ -2910,15 +2915,17 @@ local function settings_rows()
     -- a: the row's entry address.
     --
     -- ROWS STOCKHOOK OWNS (2026-11-03): Stockhook's moved rows (a material
-    -- shown in its group's other materials list, refinish-stockhook-rows.lua,
+    -- shown in its group's other materials list, Stockhook's rows file,
     -- MOVED MATERIALS) aim at DF's own entry, so this pass took one for a
     -- row of its own whenever a hide named the material: it turned the row
     -- off and lowered the shown count, and Stockhook's search filter turned
     -- it on again, frame after frame (suspected, test 43: the shown count
     -- moving alone). Stockhook publishes the moved rows of the list on
-    -- screen (_G.stockhook_rows_owned, by entry address); those are left to
+    -- screen (rows_owned, by entry address, in the active copy's _G table:
+-- _G.stockhook_mod or _G.refinish_stockhook_mod); those are left to
     -- it, and said once each in the log.
-    local owned = _G.stockhook_rows_owned
+    local owned = (_G.stockhook_mod and _G.stockhook_mod.rows_owned)
+        or (_G.refinish_stockhook_mod and _G.refinish_stockhook_mod.rows_owned)
     local function do_row(row, idx, list, i, live, c, a)
         if owned and a and owned[a] then
             if not said['owned:' .. list .. ':' .. idx] then
