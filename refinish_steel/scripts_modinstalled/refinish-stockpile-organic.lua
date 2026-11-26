@@ -97,7 +97,9 @@
 -- ---- THE RECIPE ----
 --   1. Append (mat_type, mat_index) to organic_types[cat] and
 --      organic_indexes[cat], once. A material already there is found
---      again by position_of and never appended twice.
+--      again (its own reverse index first, then a map of the list made
+--      once a sync: FINDING A MATERIAL'S POSITION) and never appended
+--      twice.
 --   2. Set the material's food_mat_index[cat] to that position, the
 --      reverse index DF reads, and read it back.
 --   3. Grow every stockpile's settings vector for the category to the
@@ -328,6 +330,19 @@ local function length(types, idxs)
     return math.min(try(function() return #types end, 0), try(function() return #idxs end, 0))
 end
 
+-- ---- FINDING A MATERIAL'S POSITION ----
+-- Until v4.2.3 each material was found by a walk of the whole list that
+-- read every slot through two closures and two pcalls, twice a sync (once
+-- to append, once for the reverse index), for every claimed material, on
+-- every daily sync and every settle poll: it showed in play as spikes in
+-- the frame rate. Now:
+--   * check_existing_pos: the material's own reverse index is its position
+--     when the slot it points at holds this very material (one read each
+--     way). Called under pcall: a build without the field falls through.
+--   * build_pos_map: otherwise the list is read once into
+--     [mat_type][mat_index] = first position, only when some material
+--     needs it, and kept for the rest of the sync (appends go into it).
+-- The first position is the one taken, as the walk took it.
 local function check_existing_pos(types, idxs, n, cat, e)
     local p = e.mat.food_mat_index[cat]
     if p and p >= 0 and p < n and types[p] == e.mt and idxs[p] == e.mi then
@@ -396,6 +411,7 @@ local function grow_settings(cat_name, spec, target)
         local vec = b and settings_vector(b, spec.path)
         local len = vec and #vec or 0
         if vec and len > 0 and len < target then
+            -- The fill: see CATEGORIES.
             local any_on, all_on = false, true
             pcall(function()
                 for k = 0, len - 1 do
@@ -406,6 +422,8 @@ local function grow_settings(cat_name, spec, target)
             local ok = pcall(function()
                 for _ = len, target - 1 do vec:insert('#', fill and 1 or 0) end
             end)
+            -- Read back: the length reached, and every new slot holds
+            -- what was written.
             if ok then
                 local ok_rb, verified = pcall(function()
                     if #vec ~= target then return false end
@@ -423,6 +441,8 @@ local function grow_settings(cat_name, spec, target)
                     id, table.concat(spec.path, '.'), len, target,
                     fill and 'on' or 'off'), 'STOCKPILE')
             else
+                -- ERROR, once per pile: that pile cannot take the new
+                -- slots, so those materials never reach it.
                 fault_once('grow:' .. id .. ':' .. cat_name, 'ERROR', ('stockpile %s:'
                     .. ' could not grow %s from %d to %d.'):format(id,
                     table.concat(spec.path, '.'), len, target), 'STOCKPILE')
@@ -455,6 +475,14 @@ local function sync_category(cat_name, list)
     local n = length(types, idxs)
     local pos_map = nil
     local added, fixed, failed = 0, 0, nil
+    -- ---- REVERSE INDEX, EVERY MATERIAL, EVERY SYNC ----
+    -- Not only the newly appended ones: the enumeration is rebuilt from
+    -- raws each load while positions can land differently, and a stale
+    -- reverse index pointing at another material is worse than an absent
+    -- one. So every material is checked every sync: its reverse index
+    -- stands only when the slot it points at holds that very material
+    -- (check_existing_pos); any other is found or appended, then written
+    -- and read back (set_reverse). Only the log line is conditional.
     for _, e in ipairs(list) do
         local ok_p, pos = pcall(check_existing_pos, types, idxs, n, cat, e)
         if ok_p and pos then
@@ -591,6 +619,8 @@ if args[1] == 'status' then
     end
     for cat_name, list in pairs(by_cat) do
         local cat = try(function() return df.organic_mat_category[cat_name] end)
+        -- (Not `cat and vectors(cat)`: an and/or expression gives one value,
+        -- which kept organic_types and left idxs nil, so the length read 0.)
         local types, idxs = nil, nil
         if cat ~= nil then types, idxs = vectors(cat) end
         print(('%-12s %d claimed, enumeration length %s'):format(cat_name, #list,
